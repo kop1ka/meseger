@@ -1,16 +1,15 @@
 #!/usr/bin/env python3
-"""Simple WebSocket-based messenger server with HTTP support."""
+"""Simple WebSocket-based messenger server with HTTP support using aiohttp."""
 
 import asyncio
 import json
 from datetime import datetime
 from typing import Set, Dict
-from http import HTTPStatus
-import websockets
-from websockets.server import serve
+from aiohttp import web
+import aiohttp
 
 # Store connected clients: {username: websocket}
-clients: Dict[str, websockets.WebSocketServerProtocol] = {}
+clients: Dict[str, web.WebSocketResponse] = {}
 # Store all usernames
 usernames: Set[str] = set()
 
@@ -53,7 +52,7 @@ HTML_PAGE = """
             if (!username) return alert('Please enter a username');
             
             const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-            ws = new WebSocket(`${protocol}//${window.location.host}`);
+            ws = new WebSocket(`${protocol}//${window.location.host}/ws`);
             
             ws.onopen = () => {
                 ws.send(JSON.stringify({ action: 'join', username }));
@@ -102,47 +101,55 @@ HTML_PAGE = """
 async def broadcast(message: str, sender: str = None):
     """Broadcast message to all connected clients."""
     if clients:
-        await asyncio.gather(
-            *[client.send(message) for client in clients.values()],
-            return_exceptions=True
-        )
+        for client in clients.values():
+            try:
+                await client.send_str(message)
+            except Exception:
+                pass
 
 
-async def handle_client(websocket: websockets.WebSocketServerProtocol):
-    """Handle individual client connection."""
+async def handle_client(request: web.Request):
+    """Handle WebSocket client connection."""
+    ws = web.WebSocketResponse()
+    await ws.prepare(request)
+    
     username = None
     
     try:
-        async for message in websocket:
-            data = json.loads(message)
-            action = data.get("action")
-            
-            if action == "join":
-                username = data.get("username")
-                if username and username not in usernames:
-                    usernames.add(username)
-                    clients[username] = websocket
-                    
-                    # Notify everyone about new user
-                    join_msg = json.dumps({
-                        "type": "system",
-                        "message": f"{username} joined the chat",
-                        "users": list(usernames),
+        async for msg in ws:
+            if msg.type == aiohttp.WSMsgType.TEXT:
+                data = json.loads(msg.data)
+                action = data.get("action")
+                
+                if action == "join":
+                    username = data.get("username")
+                    if username and username not in usernames:
+                        usernames.add(username)
+                        clients[username] = ws
+                        
+                        # Notify everyone about new user
+                        join_msg = json.dumps({
+                            "type": "system",
+                            "message": f"{username} joined the chat",
+                            "users": list(usernames),
+                            "timestamp": datetime.now().isoformat()
+                        })
+                        await broadcast(join_msg)
+                        
+                elif action == "message" and username:
+                    msg_data = data.get("message", "")
+                    chat_msg = json.dumps({
+                        "type": "chat",
+                        "username": username,
+                        "message": msg_data,
                         "timestamp": datetime.now().isoformat()
                     })
-                    await broadcast(join_msg)
+                    await broadcast(chat_msg)
                     
-            elif action == "message" and username:
-                msg_data = data.get("message", "")
-                chat_msg = json.dumps({
-                    "type": "chat",
-                    "username": username,
-                    "message": msg_data,
-                    "timestamp": datetime.now().isoformat()
-                })
-                await broadcast(chat_msg)
+            elif msg.type == aiohttp.WSMsgType.ERROR:
+                break
                 
-    except websockets.exceptions.ConnectionClosed:
+    except Exception:
         pass
     finally:
         if username:
@@ -157,29 +164,41 @@ async def handle_client(websocket: websockets.WebSocketServerProtocol):
                 "timestamp": datetime.now().isoformat()
             })
             await broadcast(leave_msg)
+    
+    return ws
 
 
-async def http_handler(path, request_headers):
+async def http_handler(request: web.Request):
     """Handle HTTP requests for the main page."""
-    if path == "/" or path == "/index.html":
-        return HTTPStatus.OK, [("Content-Type", "text/html")], HTML_PAGE.encode()
-    return None  # Continue with WebSocket handshake
+    return web.Response(text=HTML_PAGE, content_type='text/html')
 
 
-async def main():
+async def on_shutdown(app):
+    """Close all WebSocket connections on shutdown."""
+    for client in clients.values():
+        await client.close()
+    clients.clear()
+    usernames.clear()
+
+
+def create_app():
+    """Create and configure the aiohttp application."""
+    app = web.Application()
+    app.router.add_get('/', http_handler)
+    app.router.add_get('/ws', handle_client)  # WebSocket endpoint
+    app.on_shutdown.append(on_shutdown)
+    return app
+
+
+def main():
     """Start the WebSocket server with HTTP support."""
     import os
-    port = int(os.environ.get("PORT", 8765))
+    port = int(os.environ.get("PORT", 8080))
     print(f"🚀 Messenger server starting on http://0.0.0.0:{port}")
     
-    async with serve(
-        handle_client,
-        "0.0.0.0",
-        port,
-        process_request=http_handler
-    ):
-        await asyncio.Future()  # run forever
+    app = create_app()
+    web.run_app(app, host='0.0.0.0', port=port)
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()
