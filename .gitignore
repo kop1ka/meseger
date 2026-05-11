@@ -1,1 +1,1 @@
-Nothing should be ignored based on the provided file changes. The changes only include source/config files (Dockerfile, server.py) without any build artifacts, dependencies, or temporary files that would warrant adding ignore rules.
+Nothing should be ignored based on the provided file changes. The only modified file is `server.py`, which is a source code file and should not be added to .gitignore.
