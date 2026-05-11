@@ -75,8 +75,10 @@ async def handle_client(websocket: websockets.WebSocketServerProtocol):
 
 async def main():
     """Start the WebSocket server."""
-    print("🚀 Messenger server starting on ws://0.0.0.0:8765")
-    async with websockets.serve(handle_client, "0.0.0.0", 8765):
+    import os
+    port = int(os.environ.get("PORT", 8765))
+    print(f"🚀 Messenger server starting on ws://0.0.0.0:{port}")
+    async with websockets.serve(handle_client, "0.0.0.0", port):
         await asyncio.Future()  # run forever
 
 
