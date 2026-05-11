@@ -3,15 +3,170 @@
 
 import asyncio
 import json
+import sqlite3
+import hashlib
+import secrets
 from datetime import datetime
-from typing import Set, Dict
+from typing import Set, Dict, List, Optional
 from aiohttp import web
 import aiohttp
+
+# Database setup
+DB_PATH = "messenger.db"
+ADMIN_USERNAME = "admin"
+ADMIN_PASSWORD_HASH = hashlib.sha256("admin123".encode()).hexdigest()
+
+def init_db():
+    """Initialize the SQLite database."""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    
+    # Messages table
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS messages (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT NOT NULL,
+            message TEXT NOT NULL,
+            timestamp TEXT NOT NULL,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+    
+    # Users table for admin management
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT UNIQUE NOT NULL,
+            is_blocked INTEGER DEFAULT 0,
+            first_seen TEXT DEFAULT CURRENT_TIMESTAMP,
+            last_seen TEXT
+        )
+    ''')
+    
+    # Admin sessions table
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS admin_sessions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_token TEXT UNIQUE NOT NULL,
+            created_at TEXT NOT NULL,
+            expires_at TEXT NOT NULL
+        )
+    ''')
+    
+    conn.commit()
+    conn.close()
+
+def save_message(username: str, message: str, timestamp: str):
+    """Save a message to the database."""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute(
+        'INSERT INTO messages (username, message, timestamp) VALUES (?, ?, ?)',
+        (username, message, timestamp)
+    )
+    # Update user last_seen
+    cursor.execute(
+        'INSERT OR IGNORE INTO users (username) VALUES (?)',
+        (username,)
+    )
+    cursor.execute(
+        'UPDATE users SET last_seen = ? WHERE username = ?',
+        (timestamp, username)
+    )
+    conn.commit()
+    conn.close()
+
+def get_all_messages(limit: int = 100, offset: int = 0) -> List[dict]:
+    """Get all messages from the database."""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute(
+        'SELECT id, username, message, timestamp, created_at FROM messages ORDER BY created_at DESC LIMIT ? OFFSET ?',
+        (limit, offset)
+    )
+    rows = cursor.fetchall()
+    conn.close()
+    return [
+        {"id": r[0], "username": r[1], "message": r[2], "timestamp": r[3], "created_at": r[4]}
+        for r in rows
+    ]
+
+def get_all_users() -> List[dict]:
+    """Get all users from the database."""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute('SELECT username, is_blocked, first_seen, last_seen FROM users ORDER BY last_seen DESC')
+    rows = cursor.fetchall()
+    conn.close()
+    return [
+        {"username": r[0], "is_blocked": bool(r[1]), "first_seen": r[2], "last_seen": r[3]}
+        for r in rows
+    ]
+
+def block_user(username: str, blocked: bool):
+    """Block or unblock a user."""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute(
+        'UPDATE users SET is_blocked = ? WHERE username = ?',
+        (1 if blocked else 0, username)
+    )
+    conn.commit()
+    conn.close()
+
+def delete_message(message_id: int):
+    """Delete a message by ID."""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute('DELETE FROM messages WHERE id = ?', (message_id,))
+    conn.commit()
+    conn.close()
+
+def clear_all_messages():
+    """Clear all messages from the database."""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute('DELETE FROM messages')
+    conn.commit()
+    conn.close()
+
+def create_admin_session() -> str:
+    """Create a new admin session token."""
+    token = secrets.token_hex(32)
+    now = datetime.now().isoformat()
+    expires = datetime.now().replace(hour=23, minute=59, second=59).isoformat()
+    
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute(
+        'INSERT INTO admin_sessions (session_token, created_at, expires_at) VALUES (?, ?, ?)',
+        (token, now, expires)
+    )
+    conn.commit()
+    conn.close()
+    return token
+
+def validate_admin_session(token: str) -> bool:
+    """Validate an admin session token."""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute(
+        'SELECT id FROM admin_sessions WHERE session_token = ? AND expires_at > ?',
+        (token, datetime.now().isoformat())
+    )
+    row = cursor.fetchone()
+    conn.close()
+    return row is not None
+
+# Initialize database on startup
+init_db()
 
 # Store connected clients: {username: websocket}
 clients: Dict[str, web.WebSocketResponse] = {}
 # Store all usernames
 usernames: Set[str] = set()
+# Blocked users cache
+blocked_users: Set[str] = set()
 
 # Simple HTML page with modern responsive design
 HTML_PAGE = """
@@ -627,6 +782,288 @@ HTML_PAGE = """
 </html>
 """
 
+# Admin panel HTML page
+ADMIN_PAGE = """
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Admin Panel - Messenger</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #f5f6fa; min-height: 100vh; }
+        .header { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 20px; display: flex; justify-content: space-between; align-items: center; }
+        .header h1 { font-size: 24px; }
+        .logout-btn { background: rgba(255,255,255,0.2); border: none; color: white; padding: 8px 16px; border-radius: 6px; cursor: pointer; }
+        .logout-btn:hover { background: rgba(255,255,255,0.3); }
+        .container { max-width: 1200px; margin: 0 auto; padding: 20px; }
+        .tabs { display: flex; gap: 10px; margin-bottom: 20px; }
+        .tab { padding: 12px 24px; background: white; border: none; border-radius: 8px; cursor: pointer; font-weight: 500; transition: all 0.2s; }
+        .tab.active { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; }
+        .tab:hover:not(.active) { background: #e9ecef; }
+        .panel { background: white; border-radius: 12px; padding: 20px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
+        .login-form { max-width: 400px; margin: 100px auto; text-align: center; }
+        .login-form input { width: 100%; padding: 14px; margin-bottom: 15px; border: 2px solid #e9ecef; border-radius: 8px; font-size: 16px; }
+        .login-form button { width: 100%; padding: 14px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; border: none; border-radius: 8px; font-size: 16px; cursor: pointer; }
+        table { width: 100%; border-collapse: collapse; }
+        th, td { padding: 12px; text-align: left; border-bottom: 1px solid #e9ecef; }
+        th { background: #f8f9fa; font-weight: 600; }
+        .message-text { max-width: 400px; word-break: break-word; }
+        .btn { padding: 6px 12px; border: none; border-radius: 6px; cursor: pointer; font-size: 13px; }
+        .btn-danger { background: #dc3545; color: white; }
+        .btn-success { background: #28a745; color: white; }
+        .btn-warning { background: #ffc107; color: #212529; }
+        .blocked { background: #ffebee; }
+        .status-badge { padding: 4px 8px; border-radius: 4px; font-size: 12px; }
+        .status-active { background: #d4edda; color: #155724; }
+        .status-blocked { background: #f8d7da; color: #721c24; }
+        .actions { display: flex; gap: 10px; }
+        .clear-btn { margin-top: 20px; }
+        .hidden { display: none !important; }
+        .error { color: #dc3545; margin-top: 10px; }
+        .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 20px; margin-bottom: 20px; }
+        .stat-card { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 20px; border-radius: 12px; text-align: center; }
+        .stat-value { font-size: 32px; font-weight: bold; }
+        .stat-label { font-size: 14px; opacity: 0.9; }
+    </style>
+</head>
+<body>
+    <div id="loginSection">
+        <div class="panel login-form">
+            <h2>🔐 Admin Login</h2>
+            <p style="color: #6c757d; margin: 10px 0 20px;">Enter your credentials to access the admin panel</p>
+            <input type="text" id="adminUsername" placeholder="Username" value="admin">
+            <input type="password" id="adminPassword" placeholder="Password">
+            <button onclick="login()">Login</button>
+            <p class="error" id="loginError"></p>
+        </div>
+    </div>
+    
+    <div id="adminSection" class="hidden">
+        <div class="header">
+            <h1>🛡️ Admin Panel</h1>
+            <button class="logout-btn" onclick="logout()">Logout</button>
+        </div>
+        
+        <div class="container">
+            <div class="stats">
+                <div class="stat-card">
+                    <div class="stat-value" id="totalMessages">0</div>
+                    <div class="stat-label">Total Messages</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-value" id="totalUsers">0</div>
+                    <div class="stat-label">Total Users</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-value" id="blockedUsers">0</div>
+                    <div class="stat-label">Blocked Users</div>
+                </div>
+            </div>
+            
+            <div class="tabs">
+                <button class="tab active" onclick="showTab('messages')">📝 Messages</button>
+                <button class="tab" onclick="showTab('users')">👥 Users</button>
+            </div>
+            
+            <div id="messagesPanel" class="panel">
+                <h2 style="margin-bottom: 15px;">Message History</h2>
+                <table>
+                    <thead>
+                        <tr>
+                            <th>ID</th>
+                            <th>User</th>
+                            <th>Message</th>
+                            <th>Time</th>
+                            <th>Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody id="messagesTable"></tbody>
+                </table>
+                <button class="btn btn-danger clear-btn" onclick="clearAllMessages()">🗑️ Clear All Messages</button>
+            </div>
+            
+            <div id="usersPanel" class="panel hidden">
+                <h2 style="margin-bottom: 15px;">User Management</h2>
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Username</th>
+                            <th>Status</th>
+                            <th>First Seen</th>
+                            <th>Last Seen</th>
+                            <th>Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody id="usersTable"></tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let authToken = localStorage.getItem('adminToken');
+        
+        if (authToken) {
+            showAdminSection();
+        }
+        
+        function login() {
+            const username = document.getElementById('adminUsername').value;
+            const password = document.getElementById('adminPassword').value;
+            
+            fetch('/api/admin/login', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({username, password})
+            })
+            .then(r => r.json())
+            .then(data => {
+                if (data.success) {
+                    authToken = data.token;
+                    localStorage.setItem('adminToken', authToken);
+                    showAdminSection();
+                    loadMessages();
+                    loadUsers();
+                } else {
+                    document.getElementById('loginError').textContent = data.error || 'Login failed';
+                }
+            });
+        }
+        
+        function logout() {
+            localStorage.removeItem('adminToken');
+            authToken = null;
+            document.getElementById('loginSection').classList.remove('hidden');
+            document.getElementById('adminSection').classList.add('hidden');
+        }
+        
+        function showAdminSection() {
+            document.getElementById('loginSection').classList.add('hidden');
+            document.getElementById('adminSection').classList.remove('hidden');
+        }
+        
+        function showTab(tab) {
+            document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+            event.target.classList.add('active');
+            
+            document.getElementById('messagesPanel').classList.add('hidden');
+            document.getElementById('usersPanel').classList.add('hidden');
+            
+            if (tab === 'messages') {
+                document.getElementById('messagesPanel').classList.remove('hidden');
+                loadMessages();
+            } else {
+                document.getElementById('usersPanel').classList.remove('hidden');
+                loadUsers();
+            }
+        }
+        
+        function loadMessages() {
+            fetch('/api/admin/messages', {headers: {'Authorization': 'Bearer ' + authToken}})
+            .then(r => r.json())
+            .then(data => {
+                const tbody = document.getElementById('messagesTable');
+                tbody.innerHTML = '';
+                
+                if (data.messages && data.messages.length > 0) {
+                    data.messages.forEach(msg => {
+                        const row = document.createElement('tr');
+                        row.innerHTML = `
+                            <td>${msg.id}</td>
+                            <td><strong>${escapeHtml(msg.username)}</strong></td>
+                            <td class="message-text">${escapeHtml(msg.message)}</td>
+                            <td>${formatDate(msg.created_at)}</td>
+                            <td><button class="btn btn-danger" onclick="deleteMessage(${msg.id})">Delete</button></td>
+                        `;
+                        tbody.appendChild(row);
+                    });
+                    document.getElementById('totalMessages').textContent = data.messages.length;
+                } else {
+                    tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;color:#6c757d;">No messages found</td></tr>';
+                }
+            });
+        }
+        
+        function loadUsers() {
+            fetch('/api/admin/users', {headers: {'Authorization': 'Bearer ' + authToken}})
+            .then(r => r.json())
+            .then(data => {
+                const tbody = document.getElementById('usersTable');
+                tbody.innerHTML = '';
+                
+                let blockedCount = 0;
+                
+                if (data.users && data.users.length > 0) {
+                    data.users.forEach(user => {
+                        if (user.is_blocked) blockedCount++;
+                        const row = document.createElement('tr');
+                        row.className = user.is_blocked ? 'blocked' : '';
+                        row.innerHTML = `
+                            <td><strong>${escapeHtml(user.username)}</strong></td>
+                            <td><span class="status-badge ${user.is_blocked ? 'status-blocked' : 'status-active'}">${user.is_blocked ? 'Blocked' : 'Active'}</span></td>
+                            <td>${formatDate(user.first_seen)}</td>
+                            <td>${formatDate(user.last_seen)}</td>
+                            <td class="actions">
+                                <button class="btn ${user.is_blocked ? 'btn-success' : 'btn-warning'}" onclick="toggleBlock('${escapeHtml(user.username)}', ${!user.is_blocked})">
+                                    ${user.is_blocked ? 'Unblock' : 'Block'}
+                                </button>
+                            </td>
+                        `;
+                        tbody.appendChild(row);
+                    });
+                    document.getElementById('totalUsers').textContent = data.users.length;
+                    document.getElementById('blockedUsers').textContent = blockedCount;
+                } else {
+                    tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;color:#6c757d;">No users found</td></tr>';
+                }
+            });
+        }
+        
+        function deleteMessage(id) {
+            if (!confirm('Are you sure you want to delete this message?')) return;
+            
+            fetch('/api/admin/delete-message', {
+                method: 'POST',
+                headers: {'Authorization': 'Bearer ' + authToken, 'Content-Type': 'application/json'},
+                body: JSON.stringify({id})
+            }).then(() => loadMessages());
+        }
+        
+        function toggleBlock(username, blocked) {
+            fetch('/api/admin/block-user', {
+                method: 'POST',
+                headers: {'Authorization': 'Bearer ' + authToken, 'Content-Type': 'application/json'},
+                body: JSON.stringify({username, blocked})
+            }).then(() => loadUsers());
+        }
+        
+        function clearAllMessages() {
+            if (!confirm('Are you sure you want to delete ALL messages? This cannot be undone!')) return;
+            
+            fetch('/api/admin/clear-messages', {
+                method: 'POST',
+                headers: {'Authorization': 'Bearer ' + authToken}
+            }).then(() => loadMessages());
+        }
+        
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+        
+        function formatDate(isoString) {
+            if (!isoString) return '-';
+            const date = new Date(isoString);
+            return date.toLocaleString();
+        }
+    </script>
+</body>
+</html>
+"""
+
 
 async def broadcast(message: str, sender: str = None):
     """Broadcast message to all connected clients."""
@@ -667,12 +1104,20 @@ async def handle_client(request: web.Request):
                         await broadcast(join_msg)
                         
                 elif action == "message" and username:
+                    # Check if user is blocked
+                    if username in blocked_users:
+                        continue
                     msg_data = data.get("message", "")
+                    timestamp = datetime.now().isoformat()
+                    
+                    # Save message to database
+                    save_message(username, msg_data, timestamp)
+                    
                     chat_msg = json.dumps({
                         "type": "chat",
                         "username": username,
                         "message": msg_data,
-                        "timestamp": datetime.now().isoformat()
+                        "timestamp": timestamp
                     })
                     await broadcast(chat_msg)
                     
@@ -703,6 +1148,112 @@ async def http_handler(request: web.Request):
     return web.Response(text=HTML_PAGE, content_type='text/html')
 
 
+async def admin_page_handler(request: web.Request):
+    """Handle HTTP requests for the admin page."""
+    return web.Response(text=ADMIN_PAGE, content_type='text/html')
+
+
+async def admin_login_handler(request: web.Request):
+    """Handle admin login."""
+    try:
+        data = await request.json()
+        username = data.get('username', '')
+        password = data.get('password', '')
+        
+        # Check credentials
+        if username == ADMIN_USERNAME and hashlib.sha256(password.encode()).hexdigest() == ADMIN_PASSWORD_HASH:
+            token = create_admin_session()
+            return web.json_response({'success': True, 'token': token})
+        else:
+            return web.json_response({'success': False, 'error': 'Invalid credentials'}, status=401)
+    except Exception as e:
+        return web.json_response({'success': False, 'error': str(e)}, status=400)
+
+
+async def admin_messages_handler(request: web.Request):
+    """Get all messages for admin panel."""
+    token = request.headers.get('Authorization', '').replace('Bearer ', '')
+    
+    if not validate_admin_session(token):
+        return web.json_response({'error': 'Unauthorized'}, status=401)
+    
+    limit = int(request.query.get('limit', 100))
+    offset = int(request.query.get('offset', 0))
+    
+    messages = get_all_messages(limit, offset)
+    return web.json_response({'messages': messages})
+
+
+async def admin_users_handler(request: web.Request):
+    """Get all users for admin panel."""
+    token = request.headers.get('Authorization', '').replace('Bearer ', '')
+    
+    if not validate_admin_session(token):
+        return web.json_response({'error': 'Unauthorized'}, status=401)
+    
+    users = get_all_users()
+    return web.json_response({'users': users})
+
+
+async def admin_block_user_handler(request: web.Request):
+    """Block or unblock a user."""
+    token = request.headers.get('Authorization', '').replace('Bearer ', '')
+    
+    if not validate_admin_session(token):
+        return web.json_response({'error': 'Unauthorized'}, status=401)
+    
+    try:
+        data = await request.json()
+        username = data.get('username')
+        blocked = data.get('blocked', False)
+        
+        if not username:
+            return web.json_response({'error': 'Username required'}, status=400)
+        
+        block_user(username, blocked)
+        
+        # Update blocked users cache
+        if blocked:
+            blocked_users.add(username)
+        else:
+            blocked_users.discard(username)
+        
+        return web.json_response({'success': True})
+    except Exception as e:
+        return web.json_response({'error': str(e)}, status=400)
+
+
+async def admin_delete_message_handler(request: web.Request):
+    """Delete a message."""
+    token = request.headers.get('Authorization', '').replace('Bearer ', '')
+    
+    if not validate_admin_session(token):
+        return web.json_response({'error': 'Unauthorized'}, status=401)
+    
+    try:
+        data = await request.json()
+        message_id = data.get('id')
+        
+        if not message_id:
+            return web.json_response({'error': 'Message ID required'}, status=400)
+        
+        delete_message(message_id)
+        return web.json_response({'success': True})
+    except Exception as e:
+        return web.json_response({'error': str(e)}, status=400)
+
+
+async def admin_clear_messages_handler(request: web.Request):
+    """Clear all messages."""
+    token = request.headers.get('Authorization', '').replace('Bearer ', '')
+    
+    if not validate_admin_session(token):
+        return web.json_response({'error': 'Unauthorized'}, status=401)
+    
+    clear_all_messages()
+    return web.json_response({'success': True})
+
+
 async def on_shutdown(app):
     """Close all WebSocket connections on shutdown."""
     for client in clients.values():
@@ -716,6 +1267,16 @@ def create_app():
     app = web.Application()
     app.router.add_get('/', http_handler)
     app.router.add_get('/ws', handle_client)  # WebSocket endpoint
+    app.router.add_get('/admin', admin_page_handler)  # Admin panel page
+    
+    # Admin API routes
+    app.router.add_post('/api/admin/login', admin_login_handler)
+    app.router.add_get('/api/admin/messages', admin_messages_handler)
+    app.router.add_get('/api/admin/users', admin_users_handler)
+    app.router.add_post('/api/admin/block-user', admin_block_user_handler)
+    app.router.add_post('/api/admin/delete-message', admin_delete_message_handler)
+    app.router.add_post('/api/admin/clear-messages', admin_clear_messages_handler)
+    
     app.on_shutdown.append(on_shutdown)
     return app
 
