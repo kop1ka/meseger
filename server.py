@@ -167,6 +167,59 @@ HTML_PAGE = """
             display: flex;
             gap: 10px;
             flex-shrink: 0;
+            position: relative;
+        }
+        
+        .emoji-btn {
+            padding: 12px 16px;
+            background: #f8f9fa;
+            color: #6c757d;
+            border: 2px solid #e9ecef;
+            border-radius: 24px;
+            cursor: pointer;
+            font-size: 18px;
+            transition: all 0.2s;
+            -webkit-appearance: none;
+        }
+        
+        .emoji-btn:hover {
+            background: #e9ecef;
+            transform: translateY(-1px);
+        }
+        
+        .emoji-panel {
+            position: absolute;
+            bottom: 100%;
+            left: 15px;
+            right: 15px;
+            background: white;
+            border: 1px solid #e9ecef;
+            border-radius: 12px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+            padding: 12px;
+            display: none;
+            grid-template-columns: repeat(8, 1fr);
+            gap: 8px;
+            margin-bottom: 10px;
+            max-height: 200px;
+            overflow-y: auto;
+        }
+        
+        .emoji-panel.show {
+            display: grid;
+        }
+        
+        .emoji-item {
+            font-size: 20px;
+            padding: 8px;
+            text-align: center;
+            cursor: pointer;
+            border-radius: 8px;
+            transition: background 0.2s;
+        }
+        
+        .emoji-item:hover {
+            background: #f0f0f0;
         }
         
         #messageInput {
@@ -405,6 +458,8 @@ HTML_PAGE = """
         <div class="messages" id="messages"></div>
         
         <div class="input-area">
+            <button id="emojiBtn" class="emoji-btn" onclick="toggleEmojiPanel()">😊</button>
+            <div class="emoji-panel" id="emojiPanel"></div>
             <input type="text" id="messageInput" placeholder="Type a message..." onkeypress="handleKeyPress(event)" autocomplete="off">
             <button id="sendBtn" onclick="sendMessage()">Send</button>
         </div>
@@ -530,6 +585,42 @@ HTML_PAGE = """
         // Auto-focus username input on load
         window.addEventListener('load', () => {
             document.getElementById('usernameInput').focus();
+            initEmojiPanel();
+        });
+        
+        // Popular emojis list
+        const emojis = ['😀','😃','😄','😁','😆','😅','🤣','😂','🙂','🙃','😉','😊','😇','🥰','😍','🤩','😘','😗','😚','😙','😋','😛','😜','🤪','😝','🤑','🤗','🤭','🤫','🤔','🤐','🤨','😐','😑','😶','😏','😒','🙄','😬','🤥','😌','😔','😪','🤤','😴','😷','🤒','🤕','🤢','🤮','🤧','🥵','🥶','🥴','😵','🤯','🤠','🥳','😎','🤓','🧐','😕','😟','🙁','☹️','😮','😯','😲','😳','🥺','😦','😧','😨','😰','😥','😢','😭','😱','😖','😣','😞','😓','😩','😫','🥱','😤','😡','😠','🤬','😈','👿','💀','☠️','💩','🤡','👹','👺','👻','👽','👾','🤖','😺','😸','😹','😻','😼','😽','🙀','😿','😾','🙈','🙉','🙊','💋','💌','💘','💝','💖','💗','💓','💞','💕','💟','❣️','💔','❤️','🧡','💛','💚','💙','💜','🤎','🖤','🤍','👍','👎','👊','✊','🤛','🤜','🤞','✌️','🤟','🤘','👌','🤌','🤏','👈','👉','👆','👇','☝️','✋','🤚','🖐️','🖖','👋','🤙','💪','🖕','✍️','🙏','🦶','🦵','🦿','🦾','🦿'];
+        
+        function initEmojiPanel() {
+            const panel = document.getElementById('emojiPanel');
+            emojis.forEach(emoji => {
+                const span = document.createElement('span');
+                span.className = 'emoji-item';
+                span.textContent = emoji;
+                span.onclick = () => insertEmoji(emoji);
+                panel.appendChild(span);
+            });
+        }
+        
+        function toggleEmojiPanel() {
+            const panel = document.getElementById('emojiPanel');
+            panel.classList.toggle('show');
+        }
+        
+        function insertEmoji(emoji) {
+            const input = document.getElementById('messageInput');
+            input.value += emoji;
+            input.focus();
+            document.getElementById('emojiPanel').classList.remove('show');
+        }
+        
+        // Close emoji panel when clicking outside
+        document.addEventListener('click', (e) => {
+            const panel = document.getElementById('emojiPanel');
+            const btn = document.getElementById('emojiBtn');
+            if (!panel.contains(e.target) && e.target !== btn) {
+                panel.classList.remove('show');
+            }
         });
     </script>
 </body>
