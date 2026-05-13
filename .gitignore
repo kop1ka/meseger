@@ -7,53 +7,26 @@
 .env.local
 *.env.*
 
-# Logs
-*.log
-
-# Temporary files
-*.tmp
-*.swp
-
-# Python
+# Dependencies
+node_modules/
+.venv/
+venv/
 __pycache__/
 *.pyc
-*.pyo
-*.pyd
-.Python
-env/
-venv/
-.venv/
-.ENV
-.python-version
 
-# Compiled and build artifacts
-*.o
-*.obj
-*.so
-*.a
-*.dll
-*.exe
-*.out
+# Build artifacts
 dist/
 build/
 target/
 
-# Dependencies
-node_modules/
-.julia/
-.zig-cache/
-.gradle/
-.mypy_cache/
-.pytest_cache/
-coverage/
-htmlcov/
-.coverage
+# Logs
+*.log
 
-# Editors
+# Editor/IDE
 .vscode/
 .idea/
 *.swp
-*.swo
+*.tmp
 
 # OS
 .DS_Store

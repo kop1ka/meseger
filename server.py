@@ -33,6 +33,15 @@ def init_db():
         )
     ''')
     
+    # Create default admin user if not exists
+    cursor.execute('SELECT username FROM users WHERE username = ?', (ADMIN_USERNAME,))
+    if not cursor.fetchone():
+        cursor.execute(
+            'INSERT INTO users (username, password_hash) VALUES (?, ?)',
+            (ADMIN_USERNAME, ADMIN_PASSWORD_HASH)
+        )
+        print(f"✅ Default admin user created: {ADMIN_USERNAME}")
+    
     # User sessions table
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS user_sessions (
