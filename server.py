@@ -1344,6 +1344,26 @@ async def http_handler(request: web.Request):
     """Handle HTTP requests for the main page."""
     return web.Response(text=HTML_PAGE, content_type='text/html')
 
+async def serve_css(request: web.Request):
+    """Serve the CSS stylesheet."""
+    css_path = os.path.join(os.path.dirname(__file__), 'css', 'styles.css')
+    try:
+        with open(css_path, 'r') as f:
+            css_content = f.read()
+        return web.Response(text=css_content, content_type='text/css')
+    except FileNotFoundError:
+        return web.Response(text='CSS file not found', status=404)
+
+async def serve_js(request: web.Request):
+    """Serve the JavaScript file."""
+    js_path = os.path.join(os.path.dirname(__file__), 'js', 'app.js')
+    try:
+        with open(js_path, 'r') as f:
+            js_content = f.read()
+        return web.Response(text=js_content, content_type='application/javascript')
+    except FileNotFoundError:
+        return web.Response(text='JS file not found', status=404)
+
 # ============================================================================
 # Admin API Handlers
 # ============================================================================
@@ -1794,6 +1814,8 @@ def create_app():
     app = web.Application()
     app.router.add_get('/', http_handler)
     app.router.add_get('/ws', handle_client)
+    app.router.add_get('/css/styles.css', serve_css)
+    app.router.add_get('/js/app.js', serve_js)
     
     # User authentication API routes
     app.router.add_post('/api/user/register', user_register_handler)
