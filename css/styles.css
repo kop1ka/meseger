@@ -1,0 +1,564 @@
+/* ========================================
+   MESSENGER CSS STYLES
+   Optimized for mobile and desktop
+   ======================================== */
+
+/* CSS Variables for easy theming */
+:root {
+    --primary-color: #667eea;
+    --primary-dark: #5a6fd6;
+    --secondary-color: #764ba2;
+    --background-gradient: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    --white: #ffffff;
+    --gray-light: #f5f5f5;
+    --gray-medium: #e0e0e0;
+    --text-primary: #333333;
+    --text-secondary: #666666;
+    --success-bg: #d4edda;
+    --success-text: #155724;
+    --error-bg: #f8d7da;
+    --error-text: #721c24;
+    --shadow: 0 10px 40px rgba(0, 0, 0, 0.2);
+    --border-radius-lg: 12px;
+    --border-radius-md: 8px;
+    --border-radius-sm: 6px;
+    --border-radius-pill: 25px;
+}
+
+/* Reset & Base Styles */
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+    background: var(--background-gradient);
+    min-height: 100vh;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    padding: 10px;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+}
+
+/* Main Container */
+.container {
+    width: 100%;
+    max-width: 800px;
+    height: 80vh;
+    max-height: 700px;
+    background: var(--white);
+    border-radius: var(--border-radius-lg);
+    box-shadow: var(--shadow);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    transition: all 0.3s ease;
+}
+
+/* Header Section */
+.header {
+    background: var(--primary-color);
+    color: var(--white);
+    padding: 20px;
+    text-align: center;
+    transition: background 0.3s ease;
+}
+
+.header h1 {
+    font-size: 24px;
+    margin-bottom: 5px;
+    font-weight: 600;
+}
+
+.users-list {
+    font-size: 14px;
+    opacity: 0.9;
+    font-weight: 400;
+}
+
+/* Status Bar */
+.status {
+    padding: 10px;
+    text-align: center;
+    font-size: 13px;
+    font-weight: 500;
+    transition: all 0.3s ease;
+}
+
+.status.connected {
+    background: var(--success-bg);
+    color: var(--success-text);
+}
+
+.status.disconnected {
+    background: var(--error-bg);
+    color: var(--error-text);
+}
+
+/* Messages Area */
+.messages {
+    flex: 1;
+    padding: 20px;
+    overflow-y: auto;
+    background: var(--gray-light);
+    scroll-behavior: smooth;
+    -webkit-overflow-scrolling: touch;
+}
+
+.messages::-webkit-scrollbar {
+    width: 6px;
+}
+
+.messages::-webkit-scrollbar-track {
+    background: var(--gray-medium);
+}
+
+.messages::-webkit-scrollbar-thumb {
+    background: var(--primary-color);
+    border-radius: 3px;
+}
+
+/* Message Bubbles */
+.message {
+    margin-bottom: 15px;
+    padding: 10px 15px;
+    border-radius: var(--border-radius-md);
+    max-width: 70%;
+    animation: fadeIn 0.3s ease;
+}
+
+@keyframes fadeIn {
+    from {
+        opacity: 0;
+        transform: translateY(10px);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+.message.chat {
+    background: var(--white);
+    margin-right: auto;
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.1);
+}
+
+.message.my-message {
+    background: var(--primary-color);
+    color: var(--white);
+    margin-left: auto;
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.15);
+}
+
+.message.system {
+    background: var(--gray-medium);
+    text-align: center;
+    max-width: 100%;
+    font-style: italic;
+    font-size: 13px;
+}
+
+.message-username {
+    font-weight: bold;
+    font-size: 12px;
+    margin-bottom: 5px;
+    color: var(--primary-color);
+}
+
+.my-message .message-username {
+    color: var(--white);
+}
+
+.message-text {
+    font-size: 14px;
+    line-height: 1.4;
+    word-wrap: break-word;
+}
+
+.message-time {
+    font-size: 11px;
+    opacity: 0.7;
+    margin-top: 5px;
+    text-align: right;
+}
+
+/* Input Area */
+.input-area {
+    padding: 20px;
+    background: var(--white);
+    border-top: 1px solid var(--gray-medium);
+    display: flex;
+    gap: 10px;
+    transition: all 0.3s ease;
+}
+
+#messageInput {
+    flex: 1;
+    padding: 12px 15px;
+    border: 2px solid var(--gray-medium);
+    border-radius: var(--border-radius-pill);
+    font-size: 14px;
+    outline: none;
+    transition: border-color 0.3s ease, box-shadow 0.3s ease;
+}
+
+#messageInput:focus {
+    border-color: var(--primary-color);
+    box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+}
+
+#sendBtn {
+    padding: 12px 25px;
+    background: var(--primary-color);
+    color: var(--white);
+    border: none;
+    border-radius: var(--border-radius-pill);
+    cursor: pointer;
+    font-size: 14px;
+    font-weight: 600;
+    transition: background 0.3s ease, transform 0.2s ease;
+}
+
+#sendBtn:hover {
+    background: var(--primary-dark);
+    transform: translateY(-1px);
+}
+
+#sendBtn:active {
+    transform: translateY(0);
+}
+
+#sendBtn:disabled {
+    background: var(--gray-medium);
+    cursor: not-allowed;
+    transform: none;
+}
+
+/* Login Modal */
+.login-modal {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background: rgba(0, 0, 0, 0.5);
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    z-index: 1000;
+    backdrop-filter: blur(3px);
+    animation: fadeIn 0.3s ease;
+}
+
+.login-box {
+    background: var(--white);
+    padding: 40px;
+    border-radius: var(--border-radius-lg);
+    text-align: center;
+    width: 90%;
+    max-width: 400px;
+    box-shadow: var(--shadow);
+    animation: slideUp 0.3s ease;
+}
+
+@keyframes slideUp {
+    from {
+        opacity: 0;
+        transform: translateY(20px);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+.login-box h2 {
+    margin-bottom: 20px;
+    color: var(--primary-color);
+    font-size: 24px;
+}
+
+.login-box input {
+    width: 100%;
+    padding: 12px;
+    border: 2px solid var(--gray-medium);
+    border-radius: var(--border-radius-md);
+    font-size: 16px;
+    margin-bottom: 15px;
+    transition: border-color 0.3s ease;
+}
+
+.login-box input:focus {
+    border-color: var(--primary-color);
+    outline: none;
+}
+
+.login-box button {
+    width: 100%;
+    padding: 12px;
+    background: var(--primary-color);
+    color: var(--white);
+    border: none;
+    border-radius: var(--border-radius-md);
+    font-size: 16px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background 0.3s ease, transform 0.2s ease;
+}
+
+.login-box button:hover {
+    background: var(--primary-dark);
+    transform: translateY(-1px);
+}
+
+.login-box button:active {
+    transform: translateY(0);
+}
+
+/* Utility Classes */
+.hidden {
+    display: none !important;
+}
+
+/* ========================================
+   RESPONSIVE DESIGN - MOBILE FIRST
+   ======================================== */
+
+/* Mobile Devices (up to 480px) */
+@media (max-width: 480px) {
+    body {
+        padding: 5px;
+        align-items: flex-start;
+    }
+
+    .container {
+        height: 95vh;
+        max-height: none;
+        border-radius: var(--border-radius-sm);
+    }
+
+    .header {
+        padding: 15px;
+    }
+
+    .header h1 {
+        font-size: 18px;
+    }
+
+    .users-list {
+        font-size: 12px;
+    }
+
+    .messages {
+        padding: 15px;
+    }
+
+    .message {
+        max-width: 90%;
+        padding: 8px 10px;
+        margin-bottom: 12px;
+    }
+
+    .message-username {
+        font-size: 11px;
+    }
+
+    .message-text {
+        font-size: 12px;
+    }
+
+    .message-time {
+        font-size: 10px;
+    }
+
+    .input-area {
+        padding: 8px;
+        flex-wrap: wrap;
+        gap: 8px;
+    }
+
+    #messageInput {
+        min-width: calc(100% - 80px);
+        padding: 10px 12px;
+        font-size: 16px; /* Prevents zoom on iOS */
+        border-radius: 20px;
+    }
+
+    #sendBtn {
+        min-width: 70px;
+        padding: 10px 20px;
+        font-size: 14px;
+        border-radius: 20px;
+    }
+
+    .login-box {
+        padding: 30px 20px;
+        max-width: 90%;
+    }
+
+    .login-box h2 {
+        font-size: 20px;
+    }
+
+    .login-box input,
+    .login-box button {
+        font-size: 16px; /* Prevents zoom on iOS */
+        padding: 14px;
+    }
+}
+
+/* Tablet Devices (481px to 768px) */
+@media (min-width: 481px) and (max-width: 768px) {
+    body {
+        padding: 8px;
+    }
+
+    .container {
+        height: 90vh;
+        max-height: none;
+        border-radius: var(--border-radius-md);
+    }
+
+    .header h1 {
+        font-size: 20px;
+    }
+
+    .users-list {
+        font-size: 13px;
+    }
+
+    .message {
+        max-width: 85%;
+        padding: 8px 12px;
+    }
+
+    .message-text {
+        font-size: 13px;
+    }
+
+    .input-area {
+        padding: 10px;
+        gap: 8px;
+    }
+
+    #messageInput {
+        padding: 10px 12px;
+        font-size: 16px;
+    }
+
+    #sendBtn {
+        padding: 10px 20px;
+        font-size: 14px;
+    }
+}
+
+/* iPad / Small Desktop (769px to 1024px) */
+@media (min-width: 769px) and (max-width: 1024px) {
+    .container {
+        width: 85%;
+        height: 85vh;
+    }
+}
+
+/* Landscape Orientation on Mobile */
+@media (max-height: 500px) and (orientation: landscape) {
+    body {
+        padding: 5px;
+    }
+
+    .container {
+        height: 95vh;
+    }
+
+    .header {
+        padding: 10px 15px;
+    }
+
+    .header h1 {
+        font-size: 18px;
+    }
+
+    .messages {
+        padding: 10px;
+    }
+
+    .message {
+        margin-bottom: 10px;
+        padding: 8px 12px;
+    }
+
+    .login-box {
+        padding: 20px;
+    }
+}
+
+/* Large Desktop (1025px and up) */
+@media (min-width: 1025px) {
+    .container {
+        max-width: 900px;
+    }
+}
+
+/* Dark Mode Support (Optional) */
+@media (prefers-color-scheme: dark) {
+    :root {
+        --gray-light: #1a1a1a;
+        --gray-medium: #333333;
+        --text-primary: #ffffff;
+        --text-secondary: #cccccc;
+    }
+
+    .message.chat {
+        background: #2a2a2a;
+    }
+
+    .message.system {
+        background: #333333;
+        color: var(--text-primary);
+    }
+
+    .login-box,
+    .input-area {
+        background: #2a2a2a;
+    }
+
+    #messageInput {
+        background: #333333;
+        color: var(--text-primary);
+        border-color: #444444;
+    }
+
+    .header {
+        background: var(--primary-dark);
+    }
+}
+
+/* Reduced Motion Preference */
+@media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+        animation-duration: 0.01ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 0.01ms !important;
+    }
+}
+
+/* Print Styles */
+@media print {
+    .login-modal,
+    .input-area,
+    .status {
+        display: none;
+    }
+
+    .container {
+        box-shadow: none;
+        border: 1px solid #ccc;
+    }
+}
