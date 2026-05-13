@@ -1,1 +1,28 @@
-(server.py is a source file, and there are no build artifacts, dependencies, or temp files in the changes)
+```
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Environment
+.venv/
+venv/
+.env
+.env.local
+*.env.*
+
+# Logs and temporary files
+*.log
+*.tmp
+*.swp
+
+# Editors
+.vscode/
+.idea/
+
+# Build and distribution
+dist/
+build/
+*.egg-info/
+```
