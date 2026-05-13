@@ -2,7 +2,45 @@ version: '3.8'
 
 services:
   messenger:
-    build: .
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: secure-messenger:latest
+    container_name: secure-messenger
     ports:
-      - "8765:8765"
+      - "${HOST_PORT:-8765}:${PORT:-8765}"
+    environment:
+      - PORT=${PORT:-8765}
+      - PYTHONUNBUFFERED=1
+    volumes:
+      # Persist database outside container
+      - messenger-data:/app/data
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:${PORT:-8765}/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    # Resource limits (optional, adjust based on needs)
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 512M
+        reservations:
+          cpus: '0.25'
+          memory: 128M
+
+volumes:
+  messenger-data:
+    driver: local
+
+networks:
+  default:
+    driver: bridge
