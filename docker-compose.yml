@@ -12,6 +12,7 @@ services:
     environment:
       - PORT=${PORT:-8765}
       - PYTHONUNBUFFERED=1
+      - MESSENGER_DB_PATH=/app/data/messenger.db
     volumes:
       # Persist database outside container
       - messenger-data:/app/data
