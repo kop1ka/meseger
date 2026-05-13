@@ -55,6 +55,42 @@ def init_db():
         )
     ''')
     
+    # Audit log table for admin actions
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS audit_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            admin_username TEXT NOT NULL,
+            action TEXT NOT NULL,
+            target_user TEXT,
+            details TEXT,
+            timestamp TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+    
+    # User reports table
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS user_reports (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            reporter_username TEXT NOT NULL,
+            reported_username TEXT NOT NULL,
+            reason TEXT NOT NULL,
+            status TEXT DEFAULT 'pending',
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            resolved_at TEXT,
+            resolved_by TEXT
+        )
+    ''')
+    
+    # System statistics table
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS system_stats (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            stat_name TEXT UNIQUE NOT NULL,
+            stat_value TEXT,
+            last_updated TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+    
     # Friend requests table
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS friend_requests (
@@ -412,7 +448,7 @@ def get_all_users() -> List[dict]:
         for r in rows
     ]
 
-def block_user(username: str, blocked: bool):
+def block_user(username: str, blocked: bool, admin_username: str = None):
     """Block or unblock a user."""
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
@@ -421,7 +457,135 @@ def block_user(username: str, blocked: bool):
         (1 if blocked else 0, username)
     )
     conn.commit()
+    
+    # Log the action
+    if admin_username:
+        cursor.execute(
+            'INSERT INTO audit_log (admin_username, action, target_user, details) VALUES (?, ?, ?, ?)',
+            (admin_username, 'block_user' if blocked else 'unblock_user', username, f'Blocked: {blocked}')
+        )
+        conn.commit()
+    
     conn.close()
+
+def log_admin_action(admin_username: str, action: str, target_user: str = None, details: str = None):
+    """Log an admin action to the audit log."""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute(
+        'INSERT INTO audit_log (admin_username, action, target_user, details) VALUES (?, ?, ?, ?)',
+        (admin_username, action, target_user, details)
+    )
+    conn.commit()
+    conn.close()
+
+def get_audit_logs(limit: int = 100) -> List[dict]:
+    """Get recent audit logs."""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute('''
+        SELECT id, admin_username, action, target_user, details, timestamp 
+        FROM audit_log 
+        ORDER BY timestamp DESC 
+        LIMIT ?
+    ''', (limit,))
+    rows = cursor.fetchall()
+    conn.close()
+    return [
+        {"id": r[0], "admin_username": r[1], "action": r[2], "target_user": r[3], "details": r[4], "timestamp": r[5]}
+        for r in rows
+    ]
+
+def submit_user_report(reporter: str, reported: str, reason: str) -> dict:
+    """Submit a user report."""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    try:
+        cursor.execute(
+            'INSERT INTO user_reports (reporter_username, reported_username, reason) VALUES (?, ?, ?)',
+            (reporter, reported, reason)
+        )
+        conn.commit()
+        return {"success": True, "message": "Report submitted"}
+    except sqlite3.IntegrityError:
+        return {"success": False, "message": "Report already exists"}
+    finally:
+        conn.close()
+
+def get_user_reports(status: str = 'pending') -> List[dict]:
+    """Get user reports by status."""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute('''
+        SELECT id, reporter_username, reported_username, reason, status, created_at 
+        FROM user_reports 
+        WHERE status = ? 
+        ORDER BY created_at DESC
+    ''', (status,))
+    rows = cursor.fetchall()
+    conn.close()
+    return [
+        {"id": r[0], "reporter": r[1], "reported": r[2], "reason": r[3], "status": r[4], "created_at": r[5]}
+        for r in rows
+    ]
+
+def resolve_user_report(report_id: int, admin_username: str, status: str) -> dict:
+    """Resolve a user report."""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute(
+        'UPDATE user_reports SET status = ?, resolved_at = CURRENT_TIMESTAMP, resolved_by = ? WHERE id = ?',
+        (status, admin_username, report_id)
+    )
+    conn.commit()
+    
+    # Log the action
+    cursor.execute(
+        'INSERT INTO audit_log (admin_username, action, details) VALUES (?, ?, ?)',
+        (admin_username, 'resolve_report', f'Report {report_id} resolved as {status}')
+    )
+    conn.commit()
+    conn.close()
+    return {"success": True, "message": "Report resolved"}
+
+def get_system_stats() -> dict:
+    """Get system statistics."""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    
+    # Get total users
+    cursor.execute('SELECT COUNT(*) FROM users')
+    total_users = cursor.fetchone()[0]
+    
+    # Get blocked users
+    cursor.execute('SELECT COUNT(*) FROM users WHERE is_blocked = 1')
+    blocked_users_count = cursor.fetchone()[0]
+    
+    # Get total chats
+    cursor.execute('SELECT COUNT(*) FROM chats')
+    total_chats = cursor.fetchone()[0]
+    
+    # Get total messages
+    cursor.execute('SELECT COUNT(*) FROM messages')
+    total_messages = cursor.fetchone()[0]
+    
+    # Get online users (from connected clients)
+    online_users = len(clients)
+    
+    # Get pending reports
+    cursor.execute("SELECT COUNT(*) FROM user_reports WHERE status = 'pending'")
+    pending_reports = cursor.fetchone()[0]
+    
+    conn.close()
+    
+    return {
+        "total_users": total_users,
+        "blocked_users": blocked_users_count,
+        "total_chats": total_chats,
+        "total_messages": total_messages,
+        "online_users": online_users,
+        "pending_reports": pending_reports
+    }
 
 # Initialize database on startup
 init_db()
@@ -1214,6 +1378,445 @@ async def http_handler(request: web.Request):
     """Handle HTTP requests for the main page."""
     return web.Response(text=HTML_PAGE, content_type='text/html')
 
+# ============================================================================
+# Admin API Handlers
+# ============================================================================
+
+async def admin_login_handler(request: web.Request):
+    """Admin login handler."""
+    try:
+        data = await request.json()
+        username = data.get('username', '')
+        password = data.get('password', '')
+        
+        # Check credentials
+        if username != ADMIN_USERNAME:
+            return web.json_response({'success': False, 'message': 'Invalid credentials'}, status=401)
+        
+        password_hash = hashlib.sha256(password.encode()).hexdigest()
+        if password_hash != ADMIN_PASSWORD_HASH:
+            return web.json_response({'success': False, 'message': 'Invalid credentials'}, status=401)
+        
+        # Create admin session
+        token = create_admin_session()
+        
+        # Log the action
+        log_admin_action(username, 'admin_login', details='Admin logged in successfully')
+        
+        return web.json_response({'success': True, 'token': token, 'username': username})
+    except Exception as e:
+        return web.json_response({'success': False, 'message': str(e)}, status=500)
+
+async def admin_stats_handler(request: web.Request):
+    """Get system statistics."""
+    try:
+        # Validate admin session
+        token = request.headers.get('Authorization', '').replace('Bearer ', '')
+        if not validate_admin_session(token):
+            return web.json_response({'success': False, 'message': 'Unauthorized'}, status=401)
+        
+        stats = get_system_stats()
+        return web.json_response({'success': True, 'stats': stats})
+    except Exception as e:
+        return web.json_response({'success': False, 'message': str(e)}, status=500)
+
+async def admin_users_handler(request: web.Request):
+    """Get all users for admin panel."""
+    try:
+        # Validate admin session
+        token = request.headers.get('Authorization', '').replace('Bearer ', '')
+        if not validate_admin_session(token):
+            return web.json_response({'success': False, 'message': 'Unauthorized'}, status=401)
+        
+        users = get_all_users()
+        return web.json_response({'success': True, 'users': users})
+    except Exception as e:
+        return web.json_response({'success': False, 'message': str(e)}, status=500)
+
+async def admin_block_user_handler(request: web.Request):
+    """Block or unblock a user."""
+    try:
+        # Validate admin session
+        token = request.headers.get('Authorization', '').replace('Bearer ', '')
+        if not validate_admin_session(token):
+            return web.json_response({'success': False, 'message': 'Unauthorized'}, status=401)
+        
+        data = await request.json()
+        username = data.get('username', '')
+        blocked = data.get('blocked', True)
+        
+        if not username:
+            return web.json_response({'success': False, 'message': 'Username required'}, status=400)
+        
+        # Get admin username from token (for logging)
+        admin_username = ADMIN_USERNAME
+        
+        block_user(username, blocked, admin_username)
+        
+        return web.json_response({'success': True, 'message': f'User {username} {"blocked" if blocked else "unblocked"}'})
+    except Exception as e:
+        return web.json_response({'success': False, 'message': str(e)}, status=500)
+
+async def admin_reports_handler(request: web.Request):
+    """Get user reports."""
+    try:
+        # Validate admin session
+        token = request.headers.get('Authorization', '').replace('Bearer ', '')
+        if not validate_admin_session(token):
+            return web.json_response({'success': False, 'message': 'Unauthorized'}, status=401)
+        
+        status = request.query.get('status', 'pending')
+        reports = get_user_reports(status)
+        return web.json_response({'success': True, 'reports': reports})
+    except Exception as e:
+        return web.json_response({'success': False, 'message': str(e)}, status=500)
+
+async def admin_resolve_report_handler(request: web.Request):
+    """Resolve a user report."""
+    try:
+        # Validate admin session
+        token = request.headers.get('Authorization', '').replace('Bearer ', '')
+        if not validate_admin_session(token):
+            return web.json_response({'success': False, 'message': 'Unauthorized'}, status=401)
+        
+        data = await request.json()
+        report_id = data.get('report_id')
+        status = data.get('status', 'resolved')
+        
+        if not report_id:
+            return web.json_response({'success': False, 'message': 'Report ID required'}, status=400)
+        
+        result = resolve_user_report(report_id, ADMIN_USERNAME, status)
+        return web.json_response(result)
+    except Exception as e:
+        return web.json_response({'success': False, 'message': str(e)}, status=500)
+
+async def admin_logs_handler(request: web.Request):
+    """Get audit logs."""
+    try:
+        # Validate admin session
+        token = request.headers.get('Authorization', '').replace('Bearer ', '')
+        if not validate_admin_session(token):
+            return web.json_response({'success': False, 'message': 'Unauthorized'}, status=401)
+        
+        limit = int(request.query.get('limit', 100))
+        logs = get_audit_logs(limit)
+        return web.json_response({'success': True, 'logs': logs})
+    except Exception as e:
+        return web.json_response({'success': False, 'message': str(e)}, status=500)
+
+async def admin_panel_handler(request: web.Request):
+    """Serve admin panel HTML page."""
+    admin_html = """
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Admin Panel - Secure Messenger</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); min-height: 100vh; }
+        .login-container { display: flex; justify-content: center; align-items: center; min-height: 100vh; padding: 20px; }
+        .login-box { background: white; padding: 40px; border-radius: 16px; box-shadow: 0 20px 60px rgba(0,0,0,0.3); width: 100%; max-width: 400px; }
+        .login-box h2 { color: #667eea; margin-bottom: 10px; text-align: center; }
+        .login-box p { color: #6c757d; text-align: center; margin-bottom: 20px; }
+        .login-box input { width: 100%; padding: 14px; margin-bottom: 15px; border: 2px solid #e9ecef; border-radius: 12px; font-size: 16px; }
+        .login-box input:focus { outline: none; border-color: #667eea; }
+        .login-box button { width: 100%; padding: 14px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; border: none; border-radius: 12px; font-size: 16px; font-weight: 600; cursor: pointer; }
+        .login-box button:hover { transform: translateY(-1px); box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4); }
+        .login-box .hint { background: #fff3cd; border: 1px solid #ffc107; padding: 10px; border-radius: 8px; margin-bottom: 15px; font-size: 13px; color: #856404; }
+        .login-box .hint strong { color: #667eea; }
+        .admin-container { display: none; min-height: 100vh; }
+        .admin-container.active { display: block; }
+        .admin-header { background: white; padding: 20px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); display: flex; justify-content: space-between; align-items: center; }
+        .admin-header h1 { color: #667eea; }
+        .logout-btn { background: #dc3545; color: white; border: none; padding: 10px 20px; border-radius: 8px; cursor: pointer; }
+        .admin-content { padding: 30px; }
+        .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 20px; margin-bottom: 30px; }
+        .stat-card { background: white; padding: 25px; border-radius: 12px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
+        .stat-card h3 { color: #6c757d; font-size: 14px; margin-bottom: 10px; }
+        .stat-card .value { font-size: 32px; font-weight: bold; color: #667eea; }
+        .tabs { display: flex; gap: 10px; margin-bottom: 20px; }
+        .tab-btn { padding: 12px 24px; background: white; border: none; border-radius: 8px; cursor: pointer; font-weight: 600; }
+        .tab-btn.active { background: #667eea; color: white; }
+        .tab-content { display: none; }
+        .tab-content.active { display: block; }
+        .data-table { width: 100%; background: white; border-radius: 12px; overflow: hidden; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
+        .data-table th, .data-table td { padding: 15px; text-align: left; border-bottom: 1px solid #f0f0f0; }
+        .data-table th { background: #f8f9fa; font-weight: 600; color: #667eea; }
+        .data-table tr:hover { background: #f8f9fa; }
+        .status-badge { padding: 5px 12px; border-radius: 20px; font-size: 12px; font-weight: 600; }
+        .status-badge.blocked { background: #f8d7da; color: #721c24; }
+        .status-badge.active { background: #d4edda; color: #155724; }
+        .status-badge.pending { background: #fff3cd; color: #856404; }
+        .status-badge.resolved { background: #d1ecf1; color: #0c5460; }
+        .action-btn { padding: 6px 12px; border: none; border-radius: 6px; cursor: pointer; font-size: 13px; margin-right: 5px; }
+        .btn-block { background: #dc3545; color: white; }
+        .btn-unblock { background: #28a745; color: white; }
+        .btn-approve { background: #28a745; color: white; }
+        .btn-reject { background: #dc3545; color: white; }
+        .notification { position: fixed; top: 20px; right: 20px; padding: 15px 25px; background: #28a745; color: white; border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.2); z-index: 1000; display: none; }
+        .log-entry { padding: 10px; border-bottom: 1px solid #f0f0f0; font-size: 13px; }
+        .log-entry:last-child { border-bottom: none; }
+        .log-time { color: #6c757d; font-size: 12px; }
+    </style>
+</head>
+<body>
+    <div class="login-container" id="loginContainer">
+        <div class="login-box">
+            <h2>🔐 Admin Login</h2>
+            <p>Enter your admin credentials</p>
+            <div class="hint">💡 <strong>Password hint:</strong> Use special characters for better security! Default: admin123</div>
+            <input type="text" id="adminUsername" placeholder="Username" value="admin">
+            <input type="password" id="adminPassword" placeholder="Password">
+            <button onclick="adminLogin()">Login</button>
+            <p id="loginError" style="color: #dc3545; margin-top: 10px;"></p>
+        </div>
+    </div>
+
+    <div class="admin-container" id="adminContainer">
+        <div class="admin-header">
+            <h1>🛡️ Admin Panel</h1>
+            <button class="logout-btn" onclick="adminLogout()">Logout</button>
+        </div>
+        <div class="admin-content">
+            <div class="stats-grid" id="statsGrid">
+                <div class="stat-card"><h3>Total Users</h3><div class="value" id="statTotalUsers">-</div></div>
+                <div class="stat-card"><h3>Blocked Users</h3><div class="value" id="statBlockedUsers">-</div></div>
+                <div class="stat-card"><h3>Total Chats</h3><div class="value" id="statTotalChats">-</div></div>
+                <div class="stat-card"><h3>Total Messages</h3><div class="value" id="statTotalMessages">-</div></div>
+                <div class="stat-card"><h3>Online Users</h3><div class="value" id="statOnlineUsers">-</div></div>
+                <div class="stat-card"><h3>Pending Reports</h3><div class="value" id="statPendingReports">-</div></div>
+            </div>
+            
+            <div class="tabs">
+                <button class="tab-btn active" onclick="showTab('users')">Users</button>
+                <button class="tab-btn" onclick="showTab('reports')">Reports</button>
+                <button class="tab-btn" onclick="showTab('logs')">Audit Logs</button>
+            </div>
+            
+            <div class="tab-content active" id="usersTab">
+                <div class="data-table">
+                    <table>
+                        <thead><tr><th>Username</th><th>Status</th><th>First Seen</th><th>Last Seen</th><th>Actions</th></tr></thead>
+                        <tbody id="usersTableBody"></tbody>
+                    </table>
+                </div>
+            </div>
+            
+            <div class="tab-content" id="reportsTab">
+                <div class="data-table">
+                    <table>
+                        <thead><tr><th>ID</th><th>Reporter</th><th>Reported</th><th>Reason</th><th>Status</th><th>Created</th><th>Actions</th></tr></thead>
+                        <tbody id="reportsTableBody"></tbody>
+                    </table>
+                </div>
+            </div>
+            
+            <div class="tab-content" id="logsTab">
+                <div class="data-table" id="logsTable"></div>
+            </div>
+        </div>
+    </div>
+
+    <div class="notification" id="notification"></div>
+
+    <script>
+        let authToken = localStorage.getItem('adminToken');
+        
+        if (authToken) {
+            showAdminPanel();
+        }
+        
+        function showNotification(message, type = 'success') {
+            const notif = document.getElementById('notification');
+            notif.textContent = message;
+            notif.style.background = type === 'error' ? '#dc3545' : '#28a745';
+            notif.style.display = 'block';
+            setTimeout(() => notif.style.display = 'none', 3000);
+        }
+        
+        async function adminLogin() {
+            const username = document.getElementById('adminUsername').value;
+            const password = document.getElementById('adminPassword').value;
+            
+            try {
+                const response = await fetch('/api/admin/login', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({username, password})
+                });
+                const data = await response.json();
+                
+                if (data.success) {
+                    authToken = data.token;
+                    localStorage.setItem('adminToken', authToken);
+                    showAdminPanel();
+                } else {
+                    document.getElementById('loginError').textContent = data.message;
+                }
+            } catch (error) {
+                document.getElementById('loginError').textContent = 'Connection error';
+            }
+        }
+        
+        function adminLogout() {
+            localStorage.removeItem('adminToken');
+            authToken = null;
+            document.getElementById('loginContainer').style.display = 'flex';
+            document.getElementById('adminContainer').classList.remove('active');
+        }
+        
+        function showAdminPanel() {
+            document.getElementById('loginContainer').style.display = 'none';
+            document.getElementById('adminContainer').classList.add('active');
+            loadStats();
+            loadUsers();
+        }
+        
+        function showTab(tabName) {
+            document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active'));
+            document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+            document.getElementById(tabName + 'Tab').classList.add('active');
+            event.target.classList.add('active');
+            
+            if (tabName === 'reports') loadReports();
+            if (tabName === 'logs') loadLogs();
+        }
+        
+        async function loadStats() {
+            const response = await fetch('/api/admin/stats', {
+                headers: {'Authorization': 'Bearer ' + authToken}
+            });
+            const data = await response.json();
+            if (data.success) {
+                const s = data.stats;
+                document.getElementById('statTotalUsers').textContent = s.total_users;
+                document.getElementById('statBlockedUsers').textContent = s.blocked_users;
+                document.getElementById('statTotalChats').textContent = s.total_chats;
+                document.getElementById('statTotalMessages').textContent = s.total_messages;
+                document.getElementById('statOnlineUsers').textContent = s.online_users;
+                document.getElementById('statPendingReports').textContent = s.pending_reports;
+            }
+        }
+        
+        async function loadUsers() {
+            const response = await fetch('/api/admin/users', {
+                headers: {'Authorization': 'Bearer ' + authToken}
+            });
+            const data = await response.json();
+            if (data.success) {
+                const tbody = document.getElementById('usersTableBody');
+                tbody.innerHTML = '';
+                data.users.forEach(u => {
+                    const row = document.createElement('tr');
+                    row.innerHTML = `
+                        <td>${escapeHtml(u.username)}</td>
+                        <td><span class="status-badge ${u.is_blocked ? 'blocked' : 'active'}">${u.is_blocked ? 'Blocked' : 'Active'}</span></td>
+                        <td>${u.first_seen || '-'}</td>
+                        <td>${u.last_seen || '-'}</td>
+                        <td>
+                            <button class="action-btn ${u.is_blocked ? 'btn-unblock' : 'btn-block'}" 
+                                onclick="toggleUserBlock('${u.username}', ${!u.is_blocked})">
+                                ${u.is_blocked ? 'Unblock' : 'Block'}
+                            </button>
+                        </td>
+                    `;
+                    tbody.appendChild(row);
+                });
+            }
+        }
+        
+        async function toggleUserBlock(username, blocked) {
+            const response = await fetch('/api/admin/block', {
+                method: 'POST',
+                headers: {'Authorization': 'Bearer ' + authToken, 'Content-Type': 'application/json'},
+                body: JSON.stringify({username, blocked})
+            });
+            const data = await response.json();
+            if (data.success) {
+                showNotification(`User ${username} ${blocked ? 'blocked' : 'unblocked'}`);
+                loadUsers();
+                loadStats();
+            } else {
+                showNotification(data.message, 'error');
+            }
+        }
+        
+        async function loadReports() {
+            const response = await fetch('/api/admin/reports?status=pending', {
+                headers: {'Authorization': 'Bearer ' + authToken}
+            });
+            const data = await response.json();
+            if (data.success) {
+                const tbody = document.getElementById('reportsTableBody');
+                tbody.innerHTML = '';
+                data.reports.forEach(r => {
+                    const row = document.createElement('tr');
+                    row.innerHTML = `
+                        <td>#${r.id}</td>
+                        <td>${escapeHtml(r.reporter)}</td>
+                        <td>${escapeHtml(r.reported)}</td>
+                        <td>${escapeHtml(r.reason)}</td>
+                        <td><span class="status-badge pending">Pending</span></td>
+                        <td>${r.created_at}</td>
+                        <td>
+                            <button class="action-btn btn-approve" onclick="resolveReport(${r.id}, 'resolved')">Approve</button>
+                            <button class="action-btn btn-reject" onclick="resolveReport(${r.id}, 'dismissed')">Dismiss</button>
+                        </td>
+                    `;
+                    tbody.appendChild(row);
+                });
+            }
+        }
+        
+        async function resolveReport(reportId, status) {
+            const response = await fetch('/api/admin/reports/resolve', {
+                method: 'POST',
+                headers: {'Authorization': 'Bearer ' + authToken, 'Content-Type': 'application/json'},
+                body: JSON.stringify({report_id: reportId, status})
+            });
+            const data = await response.json();
+            if (data.success) {
+                showNotification('Report resolved');
+                loadReports();
+                loadStats();
+            }
+        }
+        
+        async function loadLogs() {
+            const response = await fetch('/api/admin/logs?limit=50', {
+                headers: {'Authorization': 'Bearer ' + authToken}
+            });
+            const data = await response.json();
+            if (data.success) {
+                const container = document.getElementById('logsTable');
+                container.innerHTML = '';
+                data.logs.forEach(log => {
+                    const entry = document.createElement('div');
+                    entry.className = 'log-entry';
+                    entry.innerHTML = `
+                        <div><strong>${escapeHtml(log.admin_username)}</strong> - ${escapeHtml(log.action)} ${log.target_user ? 'on ' + escapeHtml(log.target_user) : ''}</div>
+                        <div class="log-time">${log.timestamp} - ${log.details || ''}</div>
+                    `;
+                    container.appendChild(entry);
+                });
+            }
+        }
+        
+        function escapeHtml(text) {
+            if (!text) return '';
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+    </script>
+</body>
+</html>
+    """
+    return web.Response(text=admin_html, content_type='text/html')
+
 async def on_shutdown(app):
     """Close all WebSocket connections on shutdown."""
     for client in clients.values():
@@ -1244,6 +1847,16 @@ def create_app():
     app.router.add_post('/api/friend/request', send_friend_request_handler)
     app.router.add_get('/api/friend/requests', get_friend_requests_handler)
     app.router.add_post('/api/friend/respond', respond_to_friend_request_handler)
+    
+    # Admin API routes
+    app.router.add_post('/api/admin/login', admin_login_handler)
+    app.router.add_get('/api/admin/stats', admin_stats_handler)
+    app.router.add_get('/api/admin/users', admin_users_handler)
+    app.router.add_post('/api/admin/block', admin_block_user_handler)
+    app.router.add_get('/api/admin/reports', admin_reports_handler)
+    app.router.add_post('/api/admin/reports/resolve', admin_resolve_report_handler)
+    app.router.add_get('/api/admin/logs', admin_logs_handler)
+    app.router.add_get('/admin', admin_panel_handler)
     
     app.on_shutdown.append(on_shutdown)
     return app
