@@ -28,12 +28,17 @@ COPY --from=builder /root/.local /home/appuser/.local
 # Copy application files
 COPY server.py .
 COPY index.html .
+COPY migrations/ ./migrations/
 
 # Set environment variables
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PATH="/home/appuser/.local/bin:$PATH" \
-    PORT=8765
+    PORT=8765 \
+    MESSENGER_DB_PATH=/app/data/messenger.db
+
+# Create data directory for persistent storage
+RUN mkdir -p /app/data && chown -R appuser:appgroup /app/data
 
 # Change ownership to non-root user
 RUN chown -R appuser:appgroup /app

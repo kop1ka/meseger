@@ -10,9 +10,10 @@ from datetime import datetime
 from typing import Set, Dict, List, Optional
 from aiohttp import web
 import aiohttp
+import os
 
 # Database setup
-DB_PATH = "messenger.db"
+DB_PATH = os.environ.get("MESSENGER_DB_PATH", "messenger.db")
 ADMIN_USERNAME = "admin"
 ADMIN_PASSWORD_HASH = hashlib.sha256("admin123".encode()).hexdigest()
 
