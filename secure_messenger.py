@@ -648,6 +648,36 @@ async def send_notification(user_id: int, notification: dict):
 # HTTP Request Handlers
 # ============================================================================
 
+def validate_password_strength(password: str) -> tuple[bool, str]:
+    """
+    Validate password strength.
+    Returns (is_valid, error_message).
+    Requirements:
+    - At least 8 characters
+    - At least one uppercase letter
+    - At least one lowercase letter
+    - At least one digit
+    - At least one special character
+    """
+    if len(password) < 8:
+        return False, "Password must be at least 8 characters"
+    
+    has_upper = any(c.isupper() for c in password)
+    has_lower = any(c.islower() for c in password)
+    has_digit = any(c.isdigit() for c in password)
+    has_special = any(c in "!@#$%^&*()_+-=[]{}|;:,.<>?/~`" for c in password)
+    
+    if not has_upper:
+        return False, "Password must contain at least one uppercase letter"
+    if not has_lower:
+        return False, "Password must contain at least one lowercase letter"
+    if not has_digit:
+        return False, "Password must contain at least one digit"
+    if not has_special:
+        return False, "Password must contain at least one special character (!@#$%^&*()_+-=[]{}|;:,.<>?/~`)"
+    
+    return True, ""
+
 async def handle_register(request: web.Request) -> web.Response:
     """Handle user registration."""
     try:
@@ -661,8 +691,10 @@ async def handle_register(request: web.Request) -> web.Response:
         if len(username) < 3:
             return web.json_response({"success": False, "error": "Username must be at least 3 characters"})
         
-        if len(password) < 6:
-            return web.json_response({"success": False, "error": "Password must be at least 6 characters"})
+        # Validate password strength
+        is_valid, error_msg = validate_password_strength(password)
+        if not is_valid:
+            return web.json_response({"success": False, "error": error_msg})
         
         result = register_user(username, password)
         return web.json_response(result)
