@@ -1,6 +1,6 @@
 /**
- * MESSENGER CLIENT APPLICATION
- * Optimized for mobile and desktop
+ * CYBER//MESSENGER CLIENT APPLICATION
+ * Cyberpunk themed neural link interface
  * Uses vanilla JavaScript with modern ES6+ features
  */
 
@@ -19,18 +19,52 @@ class MessengerApp {
             joinButton: document.querySelector('.login-box button'),
             container: document.querySelector('.container'),
             usersList: document.getElementById('usersList'),
+            userCount: document.getElementById('userCount'),
             status: document.getElementById('status'),
             messages: document.getElementById('messages'),
             messageInput: document.getElementById('messageInput'),
-            sendButton: document.getElementById('sendBtn')
+            sendButton: document.getElementById('sendBtn'),
+            timeDisplay: document.getElementById('timeDisplay')
         };
         
         this.init();
+        this.startTimeDisplay();
     }
     
     init() {
         this.bindEvents();
         this.setupMobileOptimizations();
+        this.setupCyberEffects();
+    }
+    
+    setupCyberEffects() {
+        // Add glitch effect on hover for buttons
+        const cyberButtons = document.querySelectorAll('#sendBtn, .login-box button');
+        cyberButtons.forEach(btn => {
+            btn.addEventListener('mouseenter', () => {
+                btn.style.animation = 'glitch-1 0.3s infinite';
+            });
+            btn.addEventListener('mouseleave', () => {
+                btn.style.animation = '';
+            });
+        });
+    }
+    
+    startTimeDisplay() {
+        if (this.elements.timeDisplay) {
+            const updateTime = () => {
+                const now = new Date();
+                const timeStr = now.toLocaleTimeString('en-US', { 
+                    hour12: false,
+                    hour: '2-digit',
+                    minute: '2-digit',
+                    second: '2-digit'
+                });
+                this.elements.timeDisplay.textContent = timeStr;
+            };
+            updateTime();
+            setInterval(updateTime, 1000);
+        }
     }
     
     bindEvents() {
@@ -250,11 +284,12 @@ class MessengerApp {
         
         if (data.type === 'system') {
             msgDiv.className = 'message system';
-            msgDiv.innerHTML = `<div class="message-text">${this.escapeHtml(data.message)}</div>`;
+            msgDiv.innerHTML = `<span class="system-prefix">>>></span>${this.escapeHtml(data.message)}<span class="system-suffix"><<<</span>`;
             
             if (data.users) {
                 if (this.elements.usersList) {
-                    this.elements.usersList.textContent = 'Users: ' + data.users.join(', ');
+                    this.elements.usersList.innerHTML = `<span class="label">[</span>CONNECTED_NETRUNNERS<span class="label">]:</span> <span id="userCount">${data.users.length}</span>`;
+                    this.elements.userCount = document.getElementById('userCount');
                 }
             }
         } else if (data.type === 'chat') {
@@ -274,15 +309,6 @@ class MessengerApp {
         
         this.elements.messages.appendChild(msgDiv);
         this.scrollToBottom();
-        
-        // Animate new message
-        msgDiv.style.opacity = '0';
-        msgDiv.style.transform = 'translateY(10px)';
-        requestAnimationFrame(() => {
-            msgDiv.style.transition = 'all 0.3s ease';
-            msgDiv.style.opacity = '1';
-            msgDiv.style.transform = 'translateY(0)';
-        });
     }
     
     scrollToBottom() {

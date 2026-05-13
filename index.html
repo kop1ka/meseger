@@ -3,44 +3,93 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <meta name="theme-color" content="#667eea">
+    <meta name="theme-color" content="#00f3ff">
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-    <meta name="description" content="Secure Messenger Application">
-    <title>Messenger</title>
+    <meta name="description" content="Secure Cyberpunk Messenger">
+    <title>CYBER//MESSENGER</title>
     
     <!-- Favicon -->
     <link rel="icon" type="image/svg+xml" href="assets/favicon.svg">
     
-    <!-- Preconnect to external resources -->
+    <!-- Google Fonts - Orbitron for cyberpunk look -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;500;600;700;800;900&family=Share+Tech+Mono&display=swap" rel="stylesheet">
     
     <!-- Stylesheet -->
     <link rel="stylesheet" href="css/styles.css">
 </head>
 <body>
+    <!-- Scanline overlay effect -->
+    <div class="scanlines"></div>
+    
+    <!-- Glitch background elements -->
+    <div class="cyber-grid"></div>
+    
     <div class="login-modal" id="loginModal">
         <div class="login-box">
-            <h2>🚀 Welcome to Messenger</h2>
-            <input type="text" id="usernameInput" placeholder="Enter your username" maxlength="20" autocomplete="off">
-            <button id="joinButton">Join Chat</button>
+            <div class="cyber-title">
+                <h2><span class="glitch" data-text="CYBER//MESSENGER">CYBER//MESSENGER</span></h2>
+                <div class="subtitle">NEURAL LINK INTERFACE</div>
+            </div>
+            <div class="input-wrapper">
+                <input type="text" id="usernameInput" placeholder="ENTER_CODENAME_" maxlength="20" autocomplete="off">
+                <div class="input-glow"></div>
+            </div>
+            <button id="joinButton">
+                <span class="btn-text">INITIALIZE_LINK</span>
+                <span class="btn-glitch"></span>
+            </button>
+            <div class="decorative-corners"></div>
         </div>
     </div>
     
     <div class="container">
         <div class="header">
-            <h1>💬 Messenger</h1>
-            <div class="users-list" id="usersList">Users: </div>
+            <div class="header-top">
+                <div class="system-status">
+                    <span class="blink">●</span> SYSTEM ONLINE
+                </div>
+                <div class="time-display" id="timeDisplay">00:00:00</div>
+            </div>
+            <h1 class="cyber-heading"><span class="neon-text">CYBER</span>//<span class="neon-text-alt">MESSENGER</span></h1>
+            <div class="users-list" id="usersList">
+                <span class="label">[</span>CONNECTED_NETRUNNERS<span class="label">]:</span> <span id="userCount">0</span>
+            </div>
+            <div class="header-decoration"></div>
         </div>
         
-        <div class="status disconnected" id="status">Connecting...</div>
+        <div class="status disconnected" id="status">
+            <span class="status-icon">◈</span>
+            <span class="status-text">ESTABLISHING_NEURAL_CONNECTION...</span>
+        </div>
         
-        <div class="messages" id="messages"></div>
+        <div class="messages" id="messages">
+            <div class="message system">
+                <span class="system-prefix">>>></span>
+                WELCOME_TO_THE_UNDERGROUND
+                <span class="system-suffix"><<<</span>
+            </div>
+        </div>
         
         <div class="input-area">
-            <input type="text" id="messageInput" placeholder="Type a message..." maxlength="500" autocomplete="off">
-            <button id="sendBtn">Send</button>
+            <div class="input-wrapper-cyber">
+                <span class="input-prompt">></span>
+                <input type="text" id="messageInput" placeholder="TRANSMIT_DATA..." maxlength="500" autocomplete="off">
+                <div class="input-border"></div>
+            </div>
+            <button id="sendBtn">
+                <span class="btn-text">TRANSMIT</span>
+                <span class="btn-corners"></span>
+            </button>
         </div>
+        
+        <!-- Decorative HUD elements -->
+        <div class="hud-corner top-left"></div>
+        <div class="hud-corner top-right"></div>
+        <div class="hud-corner bottom-left"></div>
+        <div class="hud-corner bottom-right"></div>
     </div>
 
     <!-- JavaScript -->
