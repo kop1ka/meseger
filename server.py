@@ -37,6 +37,7 @@ def init_db():
         CREATE TABLE IF NOT EXISTS users (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             username TEXT UNIQUE NOT NULL,
+            password_hash TEXT NOT NULL,
             is_blocked INTEGER DEFAULT 0,
             first_seen TEXT DEFAULT CURRENT_TIMESTAMP,
             last_seen TEXT
@@ -50,6 +51,56 @@ def init_db():
             session_token TEXT UNIQUE NOT NULL,
             created_at TEXT NOT NULL,
             expires_at TEXT NOT NULL
+        )
+    ''')
+    
+    # User sessions table
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS user_sessions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT NOT NULL,
+            session_token TEXT UNIQUE NOT NULL,
+            created_at TEXT NOT NULL,
+            expires_at TEXT NOT NULL,
+            FOREIGN KEY (username) REFERENCES users(username)
+        )
+    ''')
+    
+    # Chats table
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS chats (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            creator_username TEXT NOT NULL,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (creator_username) REFERENCES users(username)
+        )
+    ''')
+    
+    # Chat members table
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS chat_members (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            chat_id INTEGER NOT NULL,
+            username TEXT NOT NULL,
+            joined_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (chat_id) REFERENCES chats(id),
+            FOREIGN KEY (username) REFERENCES users(username),
+            UNIQUE(chat_id, username)
+        )
+    ''')
+    
+    # Chat messages table
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS chat_messages (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            chat_id INTEGER NOT NULL,
+            username TEXT NOT NULL,
+            message TEXT NOT NULL,
+            timestamp TEXT NOT NULL,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (chat_id) REFERENCES chats(id),
+            FOREIGN KEY (username) REFERENCES users(username)
         )
     ''')
     
@@ -157,6 +208,168 @@ def validate_admin_session(token: str) -> bool:
     row = cursor.fetchone()
     conn.close()
     return row is not None
+
+
+# User authentication functions
+def register_user(username: str, password: str) -> dict:
+    """Register a new user."""
+    password_hash = hashlib.sha256(password.encode()).hexdigest()
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    try:
+        cursor.execute(
+            'INSERT INTO users (username, password_hash) VALUES (?, ?)',
+            (username, password_hash)
+        )
+        conn.commit()
+        return {"success": True, "message": "User registered successfully"}
+    except sqlite3.IntegrityError:
+        return {"success": False, "message": "Username already exists"}
+    finally:
+        conn.close()
+
+
+def login_user(username: str, password: str) -> dict:
+    """Login user and create session."""
+    password_hash = hashlib.sha256(password.encode()).hexdigest()
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute(
+        'SELECT username FROM users WHERE username = ? AND password_hash = ? AND is_blocked = 0',
+        (username, password_hash)
+    )
+    row = cursor.fetchone()
+    
+    if row:
+        # Create session
+        token = secrets.token_hex(32)
+        now = datetime.now().isoformat()
+        expires = datetime.now().replace(hour=23, minute=59, second=59).isoformat()
+        cursor.execute(
+            'INSERT INTO user_sessions (username, session_token, created_at, expires_at) VALUES (?, ?, ?, ?)',
+            (username, token, now, expires)
+        )
+        conn.commit()
+        conn.close()
+        return {"success": True, "token": token, "username": username}
+    else:
+        conn.close()
+        return {"success": False, "message": "Invalid credentials or user is blocked"}
+
+
+def validate_user_session(token: str) -> Optional[str]:
+    """Validate user session token and return username."""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute(
+        'SELECT username FROM user_sessions WHERE session_token = ? AND expires_at > ?',
+        (token, datetime.now().isoformat())
+    )
+    row = cursor.fetchone()
+    conn.close()
+    return row[0] if row else None
+
+
+def get_user_chats(username: str) -> List[dict]:
+    """Get all chats for a user."""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute('''
+        SELECT c.id, c.name, c.creator_username, c.created_at
+        FROM chats c
+        INNER JOIN chat_members cm ON c.id = cm.chat_id
+        WHERE cm.username = ?
+        ORDER BY c.created_at DESC
+    ''', (username,))
+    rows = cursor.fetchall()
+    conn.close()
+    return [
+        {"id": r[0], "name": r[1], "creator_username": r[2], "created_at": r[3]}
+        for r in rows
+    ]
+
+
+def create_chat(name: str, creator_username: str) -> dict:
+    """Create a new chat."""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    try:
+        cursor.execute(
+            'INSERT INTO chats (name, creator_username) VALUES (?, ?)',
+            (name, creator_username)
+        )
+        chat_id = cursor.lastrowid
+        
+        # Add creator as member
+        cursor.execute(
+            'INSERT INTO chat_members (chat_id, username) VALUES (?, ?)',
+            (chat_id, creator_username)
+        )
+        conn.commit()
+        return {"success": True, "chat_id": chat_id, "message": "Chat created successfully"}
+    except Exception as e:
+        return {"success": False, "message": str(e)}
+    finally:
+        conn.close()
+
+
+def add_user_to_chat(chat_id: int, username: str) -> dict:
+    """Add a user to a chat."""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    try:
+        cursor.execute(
+            'INSERT INTO chat_members (chat_id, username) VALUES (?, ?)',
+            (chat_id, username)
+        )
+        conn.commit()
+        return {"success": True, "message": "User added to chat"}
+    except sqlite3.IntegrityError:
+        return {"success": False, "message": "User is already in the chat"}
+    finally:
+        conn.close()
+
+
+def get_chat_messages(chat_id: int, limit: int = 100) -> List[dict]:
+    """Get messages for a specific chat."""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute('''
+        SELECT id, chat_id, username, message, timestamp, created_at
+        FROM chat_messages
+        WHERE chat_id = ?
+        ORDER BY created_at DESC
+        LIMIT ?
+    ''', (chat_id, limit))
+    rows = cursor.fetchall()
+    conn.close()
+    return [
+        {"id": r[0], "chat_id": r[1], "username": r[2], "message": r[3], "timestamp": r[4], "created_at": r[5]}
+        for r in rows
+    ]
+
+
+def save_chat_message(chat_id: int, username: str, message: str, timestamp: str):
+    """Save a message to a chat."""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute(
+        'INSERT INTO chat_messages (chat_id, username, message, timestamp) VALUES (?, ?, ?, ?)',
+        (chat_id, username, message, timestamp)
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_chat_members(chat_id: int) -> List[str]:
+    """Get all members of a chat."""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute('SELECT username FROM chat_members WHERE chat_id = ?', (chat_id,))
+    rows = cursor.fetchall()
+    conn.close()
+    return [r[0] for r in rows]
+
 
 # Initialize database on startup
 init_db()
@@ -1254,6 +1467,173 @@ async def admin_clear_messages_handler(request: web.Request):
     return web.json_response({'success': True})
 
 
+# User authentication API handlers
+async def user_register_handler(request: web.Request):
+    """Handle user registration."""
+    try:
+        data = await request.json()
+        username = data.get('username', '').strip()
+        password = data.get('password', '')
+        
+        if not username or not password:
+            return web.json_response({'success': False, 'message': 'Username and password required'}, status=400)
+        
+        result = register_user(username, password)
+        if result['success']:
+            return web.json_response(result)
+        else:
+            return web.json_response(result, status=400)
+    except Exception as e:
+        return web.json_response({'success': False, 'message': str(e)}, status=500)
+
+
+async def user_login_handler(request: web.Request):
+    """Handle user login."""
+    try:
+        data = await request.json()
+        username = data.get('username', '').strip()
+        password = data.get('password', '')
+        
+        if not username or not password:
+            return web.json_response({'success': False, 'message': 'Username and password required'}, status=400)
+        
+        result = login_user(username, password)
+        if result['success']:
+            return web.json_response(result)
+        else:
+            return web.json_response(result, status=401)
+    except Exception as e:
+        return web.json_response({'success': False, 'message': str(e)}, status=500)
+
+
+async def user_chats_handler(request: web.Request):
+    """Get user's chats."""
+    token = request.headers.get('Authorization', '').replace('Bearer ', '')
+    username = validate_user_session(token)
+    
+    if not username:
+        return web.json_response({'error': 'Unauthorized'}, status=401)
+    
+    chats = get_user_chats(username)
+    return web.json_response({'chats': chats})
+
+
+async def create_chat_handler(request: web.Request):
+    """Create a new chat."""
+    token = request.headers.get('Authorization', '').replace('Bearer ', '')
+    username = validate_user_session(token)
+    
+    if not username:
+        return web.json_response({'error': 'Unauthorized'}, status=401)
+    
+    try:
+        data = await request.json()
+        name = data.get('name', '').strip()
+        
+        if not name:
+            return web.json_response({'success': False, 'message': 'Chat name required'}, status=400)
+        
+        result = create_chat(name, username)
+        if result['success']:
+            return web.json_response(result)
+        else:
+            return web.json_response(result, status=400)
+    except Exception as e:
+        return web.json_response({'success': False, 'message': str(e)}, status=500)
+
+
+async def get_chat_messages_handler(request: web.Request) -> web.Response:
+    """Get messages for a specific chat."""
+    token = request.headers.get('Authorization', '').replace('Bearer ', '')
+    username = validate_user_session(token)
+    
+    if not username:
+        return web.json_response({'error': 'Unauthorized'}, status=401)
+    
+    chat_id = int(request.match_info['chat_id'])
+    
+    # Check if user is member of the chat
+    members = get_chat_members(chat_id)
+    if username not in members:
+        return web.json_response({'error': 'Access denied'}, status=403)
+    
+    messages = get_chat_messages(chat_id)
+    return web.json_response({'messages': messages})
+
+
+async def send_chat_message_handler(request: web.Request) -> web.Response:
+    """Send a message to a chat."""
+    token = request.headers.get('Authorization', '').replace('Bearer ', '')
+    username = validate_user_session(token)
+    
+    if not username:
+        return web.json_response({'error': 'Unauthorized'}, status=401)
+    
+    chat_id = int(request.match_info['chat_id'])
+    
+    # Check if user is member of the chat
+    members = get_chat_members(chat_id)
+    if username not in members:
+        return web.json_response({'error': 'Access denied'}, status=403)
+    
+    try:
+        data = await request.json()
+        message = data.get('message', '').strip()
+        
+        if not message:
+            return web.json_response({'success': False, 'message': 'Message required'}, status=400)
+        
+        timestamp = datetime.now().isoformat()
+        save_chat_message(chat_id, username, message, timestamp)
+        
+        return web.json_response({
+            'success': True,
+            'message': {
+                'username': username,
+                'message': message,
+                'timestamp': timestamp
+            }
+        })
+    except Exception as e:
+        return web.json_response({'success': False, 'message': str(e)}, status=500)
+
+
+async def add_member_to_chat_handler(request: web.Request) -> web.Response:
+    """Add a member to a chat."""
+    token = request.headers.get('Authorization', '').replace('Bearer ', '')
+    username = validate_user_session(token)
+    
+    if not username:
+        return web.json_response({'error': 'Unauthorized'}, status=401)
+    
+    chat_id = int(request.match_info['chat_id'])
+    
+    # Only chat creator can add members
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute('SELECT creator_username FROM chats WHERE id = ?', (chat_id,))
+    row = cursor.fetchone()
+    conn.close()
+    
+    if not row or row[0] != username:
+        return web.json_response({'error': 'Only chat creator can add members'}, status=403)
+    
+    try:
+        data = await request.json()
+        new_member = data.get('username', '').strip()
+        
+        if not new_member:
+            return web.json_response({'success': False, 'message': 'Username required'}, status=400)
+        
+        result = add_user_to_chat(chat_id, new_member)
+        if result['success']:
+            return web.json_response(result)
+        else:
+            return web.json_response(result, status=400)
+    except Exception as e:
+        return web.json_response({'success': False, 'message': str(e)}, status=500)
+
+
 async def on_shutdown(app):
     """Close all WebSocket connections on shutdown."""
     for client in clients.values():
@@ -1276,6 +1656,15 @@ def create_app():
     app.router.add_post('/api/admin/block-user', admin_block_user_handler)
     app.router.add_post('/api/admin/delete-message', admin_delete_message_handler)
     app.router.add_post('/api/admin/clear-messages', admin_clear_messages_handler)
+    
+    # User authentication API routes
+    app.router.add_post('/api/user/register', user_register_handler)
+    app.router.add_post('/api/user/login', user_login_handler)
+    app.router.add_get('/api/user/chats', user_chats_handler)
+    app.router.add_post('/api/user/chats', create_chat_handler)
+    app.router.add_get('/api/chat/{chat_id}/messages', get_chat_messages_handler)
+    app.router.add_post('/api/chat/{chat_id}/messages', send_chat_message_handler)
+    app.router.add_post('/api/chat/{chat_id}/members', add_member_to_chat_handler)
     
     app.on_shutdown.append(on_shutdown)
     return app
