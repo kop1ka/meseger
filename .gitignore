@@ -1,13 +1,1 @@
-```
-# Compiled Python files
-*.pyc
-__pycache__/
-
-# Database files
-*.db
-
-# Environment files
-.env
-.env.local
-*.env.*
-```
+(server.py is a source file, and there are no build artifacts, dependencies, or temp files in the changes)
