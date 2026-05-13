@@ -610,144 +610,100 @@ HTML_PAGE = """
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Secure Messenger</title>
-    <style>
-        * { margin: 0; padding: 0; box-sizing: border-box; }
-        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); min-height: 100vh; }
-        .auth-container { display: flex; justify-content: center; align-items: center; min-height: 100vh; padding: 20px; }
-        .auth-box { background: white; padding: 40px; border-radius: 16px; box-shadow: 0 20px 60px rgba(0,0,0,0.3); width: 100%; max-width: 400px; }
-        .auth-box h2 { color: #667eea; margin-bottom: 10px; text-align: center; }
-        .auth-box p { color: #6c757d; text-align: center; margin-bottom: 20px; }
-        .auth-box input { width: 100%; padding: 14px; margin-bottom: 15px; border: 2px solid #e9ecef; border-radius: 12px; font-size: 16px; }
-        .auth-box input:focus { outline: none; border-color: #667eea; }
-        .auth-box button { width: 100%; padding: 14px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; border: none; border-radius: 12px; font-size: 16px; font-weight: 600; cursor: pointer; }
-        .auth-box button:hover { transform: translateY(-1px); box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4); }
-        .auth-box .toggle-link { text-align: center; margin-top: 20px; color: #667eea; cursor: pointer; }
-        .app-container { display: none; height: 100vh; }
-        .app-container.active { display: flex; }
-        .sidebar { width: 300px; background: white; border-right: 1px solid #e9ecef; display: flex; flex-direction: column; }
-        .sidebar-header { padding: 20px; border-bottom: 1px solid #e9ecef; }
-        .sidebar-header h2 { color: #667eea; margin-bottom: 10px; }
-        .user-info { display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px; }
-        .logout-btn { background: #dc3545; color: white; border: none; padding: 8px 16px; border-radius: 8px; cursor: pointer; }
-        .search-box { display: flex; gap: 10px; margin-bottom: 15px; }
-        .search-box input { flex: 1; padding: 10px; border: 2px solid #e9ecef; border-radius: 8px; }
-        .search-box button { padding: 10px 16px; background: #667eea; color: white; border: none; border-radius: 8px; cursor: pointer; }
-        .tabs { display: flex; border-bottom: 1px solid #e9ecef; }
-        .tab { flex: 1; padding: 12px; text-align: center; cursor: pointer; border: none; background: none; }
-        .tab.active { color: #667eea; border-bottom: 2px solid #667eea; }
-        .chat-list { flex: 1; overflow-y: auto; }
-        .chat-item { padding: 15px 20px; border-bottom: 1px solid #f0f0f0; cursor: pointer; transition: background 0.2s; }
-        .chat-item:hover { background: #f8f9fa; }
-        .chat-item.active { background: #e7f3ff; }
-        .chat-item-name { font-weight: 600; margin-bottom: 4px; }
-        .chat-item-preview { color: #6c757d; font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-        .main-chat { flex: 1; display: flex; flex-direction: column; background: #f8f9fa; }
-        .chat-header { padding: 20px; background: white; border-bottom: 1px solid #e9ecef; display: flex; justify-content: space-between; align-items: center; }
-        .chat-header h3 { color: #333; }
-        .members-list { color: #6c757d; font-size: 13px; }
-        .messages-container { flex: 1; padding: 20px; overflow-y: auto; }
-        .message { margin-bottom: 15px; max-width: 70%; }
-        .message.my-message { margin-left: auto; }
-        .message-bubble { padding: 12px 16px; border-radius: 18px; }
-        .message.chat .message-bubble { background: white; border-bottom-left-radius: 4px; }
-        .message.my-message .message-bubble { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; border-bottom-right-radius: 4px; }
-        .message-sender { font-size: 12px; color: #667eea; margin-bottom: 4px; font-weight: 600; }
-        .message.my-message .message-sender { color: rgba(255,255,255,0.9); }
-        .message-time { font-size: 11px; opacity: 0.7; margin-top: 4px; text-align: right; }
-        .input-area { padding: 20px; background: white; border-top: 1px solid #e9ecef; display: flex; gap: 10px; }
-        .input-area input { flex: 1; padding: 14px 20px; border: 2px solid #e9ecef; border-radius: 24px; font-size: 16px; }
-        .input-area input:focus { outline: none; border-color: #667eea; }
-        .input-area button { padding: 14px 24px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; border: none; border-radius: 24px; cursor: pointer; font-weight: 600; }
-        .modal { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); display: none; justify-content: center; align-items: center; z-index: 1000; }
-        .modal.active { display: flex; }
-        .modal-content { background: white; padding: 30px; border-radius: 16px; width: 100%; max-width: 500px; max-height: 80vh; overflow-y: auto; }
-        .modal-content h3 { margin-bottom: 20px; color: #667eea; }
-        .request-item { display: flex; justify-content: space-between; align-items: center; padding: 10px; border-bottom: 1px solid #f0f0f0; }
-        .request-actions { display: flex; gap: 10px; }
-        .btn-accept { background: #28a745; color: white; border: none; padding: 8px 16px; border-radius: 8px; cursor: pointer; }
-        .btn-decline { background: #dc3545; color: white; border: none; padding: 8px 16px; border-radius: 8px; cursor: pointer; }
-        .search-results { margin-top: 10px; max-height: 200px; overflow-y: auto; border: 1px solid #e9ecef; border-radius: 8px; }
-        .search-result-item { padding: 10px; border-bottom: 1px solid #f0f0f0; display: flex; justify-content: space-between; align-items: center; }
-        .btn-send-request { background: #667eea; color: white; border: none; padding: 6px 12px; border-radius: 6px; cursor: pointer; font-size: 13px; }
-        .hidden { display: none !important; }
-        .no-chats { text-align: center; color: #6c757d; padding: 40px; }
-        .create-chat-form { margin-top: 15px; }
-        .create-chat-form input { width: 100%; padding: 10px; margin-bottom: 10px; border: 2px solid #e9ecef; border-radius: 8px; }
-        .create-chat-form button { width: 100%; padding: 10px; background: #667eea; color: white; border: none; border-radius: 8px; cursor: pointer; }
-    </style>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <meta name="theme-color" content="#00f3ff">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="description" content="Secure Cyberpunk Messenger">
+    <title>CYBER//MESSENGER</title>
+
+    <!-- Favicon -->
+    <link rel="icon" type="image/svg+xml" href="assets/favicon.svg">
+
+    <!-- Google Fonts - Orbitron for cyberpunk look -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;500;600;700;800;900&family=Share+Tech+Mono&display=swap" rel="stylesheet">
+
+    <!-- Stylesheet -->
+    <link rel="stylesheet" href="css/styles.css">
 </head>
 <body>
-    <div class="auth-container" id="authContainer">
-        <div class="auth-box">
-            <h2 id="authTitle">💬 Login</h2>
-            <p id="authSubtitle">Enter your credentials</p>
-            <input type="text" id="usernameInput" placeholder="Username" maxlength="20">
-            <input type="password" id="passwordInput" placeholder="Password">
-            <button id="authBtn" onclick="handleAuth()">Login</button>
-            <div class="toggle-link" onclick="toggleAuthMode()">Don't have an account? Register</div>
-            <p id="authError" style="color: #dc3545; margin-top: 10px;"></p>
+    <!-- Scanline overlay effect -->
+    <div class="scanlines"></div>
+
+    <!-- Glitch background elements -->
+    <div class="cyber-grid"></div>
+
+    <div class="login-modal" id="loginModal">
+        <div class="login-box">
+            <div class="cyber-title">
+                <h2><span class="glitch" data-text="CYBER//MESSENGER">CYBER//MESSENGER</span></h2>
+                <div class="subtitle">NEURAL LINK INTERFACE</div>
+            </div>
+            <div class="input-wrapper">
+                <input type="text" id="usernameInput" placeholder="ENTER_CODENAME_" maxlength="20" autocomplete="off">
+                <div class="input-glow"></div>
+            </div>
+            <button id="joinButton">
+                <span class="btn-text">INITIALIZE_LINK</span>
+                <span class="btn-glitch"></span>
+            </button>
+            <div class="decorative-corners"></div>
         </div>
     </div>
 
-    <div class="app-container" id="appContainer">
-        <div class="sidebar">
-            <div class="sidebar-header">
-                <div class="user-info">
-                    <h2 id="currentUser">User</h2>
-                    <button class="logout-btn" onclick="logout()">Logout</button>
+    <div class="container">
+        <div class="header">
+            <div class="header-top">
+                <div class="system-status">
+                    <span class="blink">●</span> SYSTEM ONLINE
                 </div>
-                <div class="search-box">
-                    <input type="text" id="userSearch" placeholder="Search users..." oninput="searchUsers()">
-                    <button onclick="searchUsers()">🔍</button>
-                </div>
-                <div id="searchResults" class="search-results hidden"></div>
-                <div class="tabs">
-                    <button class="tab active" onclick="showTab('chats')">Chats</button>
-                    <button class="tab" onclick="showTab('requests')">Requests (<span id="requestCount">0</span>)</button>
-                </div>
+                <div class="time-display" id="timeDisplay">00:00:00</div>
             </div>
-            <div class="chat-list" id="chatList">
-                <div class="no-chats">No chats yet. Start a conversation!</div>
+            <h1 class="cyber-heading"><span class="neon-text">CYBER</span>//<span class="neon-text-alt">MESSENGER</span></h1>
+            <div class="users-list" id="usersList">
+                <span class="label">[</span>CONNECTED_NETRUNNERS<span class="label">]:</span> <span id="userCount">0</span>
+            </div>
+            <div class="header-decoration"></div>
+        </div>
+
+        <div class="status disconnected" id="status">
+            <span class="status-icon">◈</span>
+            <span class="status-text">ESTABLISHING_NEURAL_CONNECTION...</span>
+        </div>
+
+        <div class="messages" id="messages">
+            <div class="message system">
+                <span class="system-prefix">>>></span>
+                WELCOME_TO_THE_UNDERGROUND
+                <span class="system-suffix"><<<</span>
             </div>
         </div>
-        <div class="main-chat">
-            <div class="chat-header" id="chatHeader">
-                <div>
-                    <h3 id="currentChatName">Select a chat</h3>
-                    <div class="members-list" id="chatMembers"></div>
-                </div>
-                <button onclick="showCreateChatModal()" style="padding: 10px 20px; background: #667eea; color: white; border: none; border-radius: 8px; cursor: pointer;">+ New Group</button>
+
+        <div class="input-area">
+            <div class="input-wrapper-cyber">
+                <span class="input-prompt">></span>
+                <input type="text" id="messageInput" placeholder="TRANSMIT_DATA..." maxlength="500" autocomplete="off">
+                <div class="input-border"></div>
             </div>
-            <div class="messages-container" id="messagesContainer">
-                <div class="no-chats">Select a chat to start messaging</div>
-            </div>
-            <div class="input-area" id="inputArea" style="display: none;">
-                <input type="text" id="messageInput" placeholder="Type a message..." onkeypress="handleKeyPress(event)">
-                <button onclick="sendMessage()">Send</button>
-            </div>
+            <button id="sendBtn">
+                <span class="btn-text">TRANSMIT</span>
+                <span class="btn-corners"></span>
+            </button>
         </div>
+
+        <!-- Decorative HUD elements -->
+        <div class="hud-corner top-left"></div>
+        <div class="hud-corner top-right"></div>
+        <div class="hud-corner bottom-left"></div>
+        <div class="hud-corner bottom-right"></div>
     </div>
 
-    <div class="modal" id="requestsModal">
-        <div class="modal-content">
-            <h3>Friend Requests</h3>
-            <div id="requestsList"></div>
-            <button onclick="closeModal('requestsModal')" style="margin-top: 20px; padding: 10px 20px; background: #6c757d; color: white; border: none; border-radius: 8px; cursor: pointer;">Close</button>
-        </div>
-    </div>
-
-    <div class="modal" id="createChatModal">
-        <div class="modal-content">
-            <h3>Create Group Chat</h3>
-            <div class="create-chat-form">
-                <input type="text" id="newChatName" placeholder="Group name">
-                <input type="text" id="newChatMembers" placeholder="Add members (comma-separated usernames)">
-                <button onclick="createGroupChat()">Create Group</button>
-            </div>
-            <button onclick="closeModal('createChatModal')" style="margin-top: 20px; padding: 10px 20px; background: #6c757d; color: white; border: none; border-radius: 8px; cursor: pointer;">Cancel</button>
-        </div>
+    <!-- JavaScript -->
+    <script src="js/app.js" defer></script>
+</body>
+</html>
     </div>
 
     <script>
