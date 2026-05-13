@@ -1,43 +1,13 @@
 ```
-# Database file
-secure_messenger.db
+# Compiled Python files
+*.pyc
+__pycache__/
+
+# Database files
+*.db
 
 # Environment files
 .env
 .env.local
 *.env.*
-
-# Logs
-*.log
-
-# Python specific
-__pycache__/
-*.pyc
-*.pyo
-*.pyd
-.Python
-env/
-venv/
-.venv/
-.python-version
-pip-log.txt
-pip-delete-this-directory.txt
-
-# Testing
-.coverage
-coverage/
-htmlcov/
-.nox/
-.tox/
-
-# IDE
-.vscode/
-.idea/
-*.swp
-*.swo
-*.tmp
-
-# OS
-.DS_Store
-Thumbs.db
 ```
