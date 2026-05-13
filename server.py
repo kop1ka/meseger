@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Simple WebSocket-based messenger server with HTTP support using aiohttp."""
+"""Secure Messenger with authentication, private chats, and group chats."""
 
 import asyncio
 import json
@@ -21,18 +21,7 @@ def init_db():
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     
-    # Messages table
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS messages (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            username TEXT NOT NULL,
-            message TEXT NOT NULL,
-            timestamp TEXT NOT NULL,
-            created_at TEXT DEFAULT CURRENT_TIMESTAMP
-        )
-    ''')
-    
-    # Users table for admin management
+    # Users table
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS users (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -41,16 +30,6 @@ def init_db():
             is_blocked INTEGER DEFAULT 0,
             first_seen TEXT DEFAULT CURRENT_TIMESTAMP,
             last_seen TEXT
-        )
-    ''')
-    
-    # Admin sessions table
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS admin_sessions (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            session_token TEXT UNIQUE NOT NULL,
-            created_at TEXT NOT NULL,
-            expires_at TEXT NOT NULL
         )
     ''')
     
@@ -66,12 +45,50 @@ def init_db():
         )
     ''')
     
-    # Chats table
+    # Admin sessions table
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS admin_sessions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_token TEXT UNIQUE NOT NULL,
+            created_at TEXT NOT NULL,
+            expires_at TEXT NOT NULL
+        )
+    ''')
+    
+    # Friend requests table
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS friend_requests (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            sender_username TEXT NOT NULL,
+            receiver_username TEXT NOT NULL,
+            status TEXT DEFAULT 'pending',
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (sender_username) REFERENCES users(username),
+            FOREIGN KEY (receiver_username) REFERENCES users(username),
+            UNIQUE(sender_username, receiver_username)
+        )
+    ''')
+    
+    # Friends table
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS friends (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user1 TEXT NOT NULL,
+            user2 TEXT NOT NULL,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (user1) REFERENCES users(username),
+            FOREIGN KEY (user2) REFERENCES users(username),
+            UNIQUE(user1, user2)
+        )
+    ''')
+    
+    # Chats table (for group chats)
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS chats (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             name TEXT NOT NULL,
             creator_username TEXT NOT NULL,
+            is_group INTEGER DEFAULT 1,
             created_at TEXT DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY (creator_username) REFERENCES users(username)
         )
@@ -90,96 +107,270 @@ def init_db():
         )
     ''')
     
-    # Chat messages table
+    # Messages table (for all chat types)
     cursor.execute('''
-        CREATE TABLE IF NOT EXISTS chat_messages (
+        CREATE TABLE IF NOT EXISTS messages (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             chat_id INTEGER NOT NULL,
-            username TEXT NOT NULL,
+            sender_username TEXT NOT NULL,
             message TEXT NOT NULL,
             timestamp TEXT NOT NULL,
             created_at TEXT DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY (chat_id) REFERENCES chats(id),
-            FOREIGN KEY (username) REFERENCES users(username)
+            FOREIGN KEY (sender_username) REFERENCES users(username)
         )
     ''')
     
     conn.commit()
     conn.close()
 
-def save_message(username: str, message: str, timestamp: str):
-    """Save a message to the database."""
+def register_user(username: str, password: str) -> dict:
+    """Register a new user."""
+    password_hash = hashlib.sha256(password.encode()).hexdigest()
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
-    cursor.execute(
-        'INSERT INTO messages (username, message, timestamp) VALUES (?, ?, ?)',
-        (username, message, timestamp)
-    )
-    # Update user last_seen
-    cursor.execute(
-        'INSERT OR IGNORE INTO users (username) VALUES (?)',
-        (username,)
-    )
-    cursor.execute(
-        'UPDATE users SET last_seen = ? WHERE username = ?',
-        (timestamp, username)
-    )
-    conn.commit()
-    conn.close()
+    try:
+        cursor.execute(
+            'INSERT INTO users (username, password_hash) VALUES (?, ?)',
+            (username, password_hash)
+        )
+        conn.commit()
+        return {"success": True, "message": "User registered successfully"}
+    except sqlite3.IntegrityError:
+        return {"success": False, "message": "Username already exists"}
+    finally:
+        conn.close()
 
-def get_all_messages(limit: int = 100, offset: int = 0) -> List[dict]:
-    """Get all messages from the database."""
+def login_user(username: str, password: str) -> dict:
+    """Login user and create session."""
+    password_hash = hashlib.sha256(password.encode()).hexdigest()
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     cursor.execute(
-        'SELECT id, username, message, timestamp, created_at FROM messages ORDER BY created_at DESC LIMIT ? OFFSET ?',
-        (limit, offset)
+        'SELECT username FROM users WHERE username = ? AND password_hash = ? AND is_blocked = 0',
+        (username, password_hash)
+    )
+    row = cursor.fetchone()
+    
+    if row:
+        token = secrets.token_hex(32)
+        now = datetime.now().isoformat()
+        expires = datetime.now().replace(hour=23, minute=59, second=59).isoformat()
+        cursor.execute(
+            'INSERT INTO user_sessions (username, session_token, created_at, expires_at) VALUES (?, ?, ?, ?)',
+            (username, token, now, expires)
+        )
+        conn.commit()
+        conn.close()
+        return {"success": True, "token": token, "username": username}
+    else:
+        conn.close()
+        return {"success": False, "message": "Invalid credentials or user is blocked"}
+
+def validate_user_session(token: str) -> Optional[str]:
+    """Validate user session token and return username."""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute(
+        'SELECT username FROM user_sessions WHERE session_token = ? AND expires_at > ?',
+        (token, datetime.now().isoformat())
+    )
+    row = cursor.fetchone()
+    conn.close()
+    return row[0] if row else None
+
+def search_users(query: str, exclude_username: str) -> List[str]:
+    """Search for users by username."""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute(
+        'SELECT username FROM users WHERE username LIKE ? AND username != ? AND is_blocked = 0 LIMIT 20',
+        (f'%{query}%', exclude_username)
     )
     rows = cursor.fetchall()
     conn.close()
-    return [
-        {"id": r[0], "username": r[1], "message": r[2], "timestamp": r[3], "created_at": r[4]}
-        for r in rows
-    ]
+    return [r[0] for r in rows]
 
-def get_all_users() -> List[dict]:
-    """Get all users from the database."""
+def send_friend_request(sender: str, receiver: str) -> dict:
+    """Send a friend request."""
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
-    cursor.execute('SELECT username, is_blocked, first_seen, last_seen FROM users ORDER BY last_seen DESC')
-    rows = cursor.fetchall()
-    conn.close()
-    return [
-        {"username": r[0], "is_blocked": bool(r[1]), "first_seen": r[2], "last_seen": r[3]}
-        for r in rows
-    ]
+    try:
+        cursor.execute(
+            'INSERT INTO friend_requests (sender_username, receiver_username) VALUES (?, ?)',
+            (sender, receiver)
+        )
+        conn.commit()
+        return {"success": True, "message": "Friend request sent"}
+    except sqlite3.IntegrityError:
+        return {"success": False, "message": "Request already exists"}
+    finally:
+        conn.close()
 
-def block_user(username: str, blocked: bool):
-    """Block or unblock a user."""
+def get_friend_requests(username: str) -> List[dict]:
+    """Get pending friend requests for a user."""
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     cursor.execute(
-        'UPDATE users SET is_blocked = ? WHERE username = ?',
-        (1 if blocked else 0, username)
+        'SELECT sender_username, created_at FROM friend_requests WHERE receiver_username = ? AND status = ?',
+        (username, 'pending')
+    )
+    rows = cursor.fetchall()
+    conn.close()
+    return [{"sender": r[0], "created_at": r[1]} for r in rows]
+
+def respond_to_friend_request(sender: str, receiver: str, accept: bool) -> dict:
+    """Accept or decline a friend request."""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    
+    if accept:
+        status = 'accepted'
+    else:
+        status = 'declined'
+    
+    cursor.execute(
+        'UPDATE friend_requests SET status = ? WHERE sender_username = ? AND receiver_username = ?',
+        (status, sender, receiver)
+    )
+    
+    if accept:
+        # Create a private chat between the two users
+        try:
+            cursor.execute(
+                'INSERT INTO chats (name, creator_username, is_group) VALUES (?, ?, 0)',
+                (f"{min(sender, receiver)}-{max(sender, receiver)}", receiver)
+            )
+            chat_id = cursor.lastrowid
+            cursor.execute('INSERT INTO chat_members (chat_id, username) VALUES (?, ?)', (chat_id, sender))
+            cursor.execute('INSERT INTO chat_members (chat_id, username) VALUES (?, ?)', (chat_id, receiver))
+        except sqlite3.IntegrityError:
+            pass  # Chat already exists
+    
+    conn.commit()
+    conn.close()
+    return {"success": True, "message": f"Request {'accepted' if accept else 'declined'}"}
+
+def get_friends(username: str) -> List[str]:
+    """Get list of friends for a user."""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute(
+        '''SELECT CASE WHEN user1 = ? THEN user2 ELSE user1 END as friend
+           FROM friends WHERE user1 = ? OR user2 = ?''',
+        (username, username, username)
+    )
+    rows = cursor.fetchall()
+    conn.close()
+    return [r[0] for r in rows]
+
+def get_user_chats(username: str) -> List[dict]:
+    """Get all chats for a user."""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute('''
+        SELECT c.id, c.name, c.creator_username, c.is_group, c.created_at
+        FROM chats c
+        INNER JOIN chat_members cm ON c.id = cm.chat_id
+        WHERE cm.username = ?
+        ORDER BY c.created_at DESC
+    ''', (username,))
+    rows = cursor.fetchall()
+    conn.close()
+    return [
+        {"id": r[0], "name": r[1], "creator_username": r[2], "is_group": bool(r[3]), "created_at": r[4]}
+        for r in rows
+    ]
+
+def create_chat(name: str, creator_username: str, members: List[str]) -> dict:
+    """Create a new group chat."""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    try:
+        cursor.execute(
+            'INSERT INTO chats (name, creator_username, is_group) VALUES (?, ?, 1)',
+            (name, creator_username)
+        )
+        chat_id = cursor.lastrowid
+        
+        # Add creator as member
+        cursor.execute('INSERT INTO chat_members (chat_id, username) VALUES (?, ?)', (chat_id, creator_username))
+        
+        # Add other members
+        for member in members:
+            if member != creator_username:
+                cursor.execute('INSERT INTO chat_members (chat_id, username) VALUES (?, ?)', (chat_id, member))
+        
+        conn.commit()
+        return {"success": True, "chat_id": chat_id, "message": "Chat created successfully"}
+    except Exception as e:
+        return {"success": False, "message": str(e)}
+    finally:
+        conn.close()
+
+def add_user_to_chat(chat_id: int, username: str) -> dict:
+    """Add a user to a chat."""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    try:
+        cursor.execute(
+            'INSERT INTO chat_members (chat_id, username) VALUES (?, ?)',
+            (chat_id, username)
+        )
+        conn.commit()
+        return {"success": True, "message": "User added to chat"}
+    except sqlite3.IntegrityError:
+        return {"success": False, "message": "User is already in the chat"}
+    finally:
+        conn.close()
+
+def get_chat_messages(chat_id: int, limit: int = 100) -> List[dict]:
+    """Get messages for a specific chat."""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute('''
+        SELECT id, chat_id, sender_username, message, timestamp, created_at
+        FROM messages
+        WHERE chat_id = ?
+        ORDER BY created_at ASC
+        LIMIT ?
+    ''', (chat_id, limit))
+    rows = cursor.fetchall()
+    conn.close()
+    return [
+        {"id": r[0], "chat_id": r[1], "sender_username": r[2], "message": r[3], "timestamp": r[4], "created_at": r[5]}
+        for r in rows
+    ]
+
+def save_chat_message(chat_id: int, username: str, message: str, timestamp: str):
+    """Save a message to a chat."""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute(
+        'INSERT INTO messages (chat_id, sender_username, message, timestamp) VALUES (?, ?, ?, ?)',
+        (chat_id, username, message, timestamp)
     )
     conn.commit()
     conn.close()
 
-def delete_message(message_id: int):
-    """Delete a message by ID."""
+def get_chat_members(chat_id: int) -> List[str]:
+    """Get all members of a chat."""
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
-    cursor.execute('DELETE FROM messages WHERE id = ?', (message_id,))
-    conn.commit()
+    cursor.execute('SELECT username FROM chat_members WHERE chat_id = ?', (chat_id,))
+    rows = cursor.fetchall()
     conn.close()
+    return [r[0] for r in rows]
 
-def clear_all_messages():
-    """Clear all messages from the database."""
+def get_private_chat_id(user1: str, user2: str) -> Optional[int]:
+    """Get the private chat ID between two users."""
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
-    cursor.execute('DELETE FROM messages')
-    conn.commit()
+    chat_name = f"{min(user1, user2)}-{max(user1, user2)}"
+    cursor.execute('SELECT id FROM chats WHERE name = ? AND is_group = 0', (chat_name,))
+    row = cursor.fetchone()
     conn.close()
+    return row[0] if row else None
 
 def create_admin_session() -> str:
     """Create a new admin session token."""
@@ -209,1091 +400,542 @@ def validate_admin_session(token: str) -> bool:
     conn.close()
     return row is not None
 
-
-# User authentication functions
-def register_user(username: str, password: str) -> dict:
-    """Register a new user."""
-    password_hash = hashlib.sha256(password.encode()).hexdigest()
+def get_all_users() -> List[dict]:
+    """Get all users from the database."""
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
-    try:
-        cursor.execute(
-            'INSERT INTO users (username, password_hash) VALUES (?, ?)',
-            (username, password_hash)
-        )
-        conn.commit()
-        return {"success": True, "message": "User registered successfully"}
-    except sqlite3.IntegrityError:
-        return {"success": False, "message": "Username already exists"}
-    finally:
-        conn.close()
-
-
-def login_user(username: str, password: str) -> dict:
-    """Login user and create session."""
-    password_hash = hashlib.sha256(password.encode()).hexdigest()
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
-    cursor.execute(
-        'SELECT username FROM users WHERE username = ? AND password_hash = ? AND is_blocked = 0',
-        (username, password_hash)
-    )
-    row = cursor.fetchone()
-    
-    if row:
-        # Create session
-        token = secrets.token_hex(32)
-        now = datetime.now().isoformat()
-        expires = datetime.now().replace(hour=23, minute=59, second=59).isoformat()
-        cursor.execute(
-            'INSERT INTO user_sessions (username, session_token, created_at, expires_at) VALUES (?, ?, ?, ?)',
-            (username, token, now, expires)
-        )
-        conn.commit()
-        conn.close()
-        return {"success": True, "token": token, "username": username}
-    else:
-        conn.close()
-        return {"success": False, "message": "Invalid credentials or user is blocked"}
-
-
-def validate_user_session(token: str) -> Optional[str]:
-    """Validate user session token and return username."""
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
-    cursor.execute(
-        'SELECT username FROM user_sessions WHERE session_token = ? AND expires_at > ?',
-        (token, datetime.now().isoformat())
-    )
-    row = cursor.fetchone()
-    conn.close()
-    return row[0] if row else None
-
-
-def get_user_chats(username: str) -> List[dict]:
-    """Get all chats for a user."""
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
-    cursor.execute('''
-        SELECT c.id, c.name, c.creator_username, c.created_at
-        FROM chats c
-        INNER JOIN chat_members cm ON c.id = cm.chat_id
-        WHERE cm.username = ?
-        ORDER BY c.created_at DESC
-    ''', (username,))
+    cursor.execute('SELECT username, is_blocked, first_seen, last_seen FROM users ORDER BY last_seen DESC')
     rows = cursor.fetchall()
     conn.close()
     return [
-        {"id": r[0], "name": r[1], "creator_username": r[2], "created_at": r[3]}
+        {"username": r[0], "is_blocked": bool(r[1]), "first_seen": r[2], "last_seen": r[3]}
         for r in rows
     ]
 
-
-def create_chat(name: str, creator_username: str) -> dict:
-    """Create a new chat."""
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
-    try:
-        cursor.execute(
-            'INSERT INTO chats (name, creator_username) VALUES (?, ?)',
-            (name, creator_username)
-        )
-        chat_id = cursor.lastrowid
-        
-        # Add creator as member
-        cursor.execute(
-            'INSERT INTO chat_members (chat_id, username) VALUES (?, ?)',
-            (chat_id, creator_username)
-        )
-        conn.commit()
-        return {"success": True, "chat_id": chat_id, "message": "Chat created successfully"}
-    except Exception as e:
-        return {"success": False, "message": str(e)}
-    finally:
-        conn.close()
-
-
-def add_user_to_chat(chat_id: int, username: str) -> dict:
-    """Add a user to a chat."""
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
-    try:
-        cursor.execute(
-            'INSERT INTO chat_members (chat_id, username) VALUES (?, ?)',
-            (chat_id, username)
-        )
-        conn.commit()
-        return {"success": True, "message": "User added to chat"}
-    except sqlite3.IntegrityError:
-        return {"success": False, "message": "User is already in the chat"}
-    finally:
-        conn.close()
-
-
-def get_chat_messages(chat_id: int, limit: int = 100) -> List[dict]:
-    """Get messages for a specific chat."""
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
-    cursor.execute('''
-        SELECT id, chat_id, username, message, timestamp, created_at
-        FROM chat_messages
-        WHERE chat_id = ?
-        ORDER BY created_at DESC
-        LIMIT ?
-    ''', (chat_id, limit))
-    rows = cursor.fetchall()
-    conn.close()
-    return [
-        {"id": r[0], "chat_id": r[1], "username": r[2], "message": r[3], "timestamp": r[4], "created_at": r[5]}
-        for r in rows
-    ]
-
-
-def save_chat_message(chat_id: int, username: str, message: str, timestamp: str):
-    """Save a message to a chat."""
+def block_user(username: str, blocked: bool):
+    """Block or unblock a user."""
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     cursor.execute(
-        'INSERT INTO chat_messages (chat_id, username, message, timestamp) VALUES (?, ?, ?, ?)',
-        (chat_id, username, message, timestamp)
+        'UPDATE users SET is_blocked = ? WHERE username = ?',
+        (1 if blocked else 0, username)
     )
     conn.commit()
     conn.close()
-
-
-def get_chat_members(chat_id: int) -> List[str]:
-    """Get all members of a chat."""
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
-    cursor.execute('SELECT username FROM chat_members WHERE chat_id = ?', (chat_id,))
-    rows = cursor.fetchall()
-    conn.close()
-    return [r[0] for r in rows]
-
 
 # Initialize database on startup
 init_db()
 
 # Store connected clients: {username: websocket}
 clients: Dict[str, web.WebSocketResponse] = {}
-# Store all usernames
-usernames: Set[str] = set()
 # Blocked users cache
 blocked_users: Set[str] = set()
 
-# Simple HTML page with modern responsive design
 HTML_PAGE = """
 <!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Messenger</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Secure Messenger</title>
     <style>
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-            -webkit-tap-highlight-color: transparent;
-        }
-        
-        body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            min-height: 100vh;
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            padding: 10px;
-        }
-        
-        .container {
-            width: 100%;
-            max-width: 800px;
-            height: 90vh;
-            max-height: 700px;
-            background: white;
-            border-radius: 16px;
-            box-shadow: 0 10px 40px rgba(0,0,0,0.2);
-            display: flex;
-            flex-direction: column;
-            overflow: hidden;
-        }
-        
-        .header {
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            color: white;
-            padding: 15px 20px;
-            text-align: center;
-            flex-shrink: 0;
-        }
-        
-        .header h1 {
-            font-size: 20px;
-            margin-bottom: 5px;
-            font-weight: 600;
-        }
-        
-        .users-list {
-            font-size: 13px;
-            opacity: 0.9;
-            white-space: nowrap;
-            overflow: hidden;
-            text-overflow: ellipsis;
-        }
-        
-        .status {
-            padding: 8px;
-            text-align: center;
-            font-size: 12px;
-            flex-shrink: 0;
-        }
-        
-        .status.connected {
-            background: #d4edda;
-            color: #155724;
-        }
-        
-        .status.disconnected {
-            background: #f8d7da;
-            color: #721c24;
-        }
-        
-        .messages {
-            flex: 1;
-            padding: 15px;
-            overflow-y: auto;
-            background: #f8f9fa;
-            -webkit-overflow-scrolling: touch;
-        }
-        
-        .message {
-            margin-bottom: 12px;
-            padding: 10px 14px;
-            border-radius: 12px;
-            max-width: 75%;
-            word-wrap: break-word;
-            animation: fadeIn 0.3s ease;
-        }
-        
-        @keyframes fadeIn {
-            from { opacity: 0; transform: translateY(10px); }
-            to { opacity: 1; transform: translateY(0); }
-        }
-        
-        .message.chat {
-            background: white;
-            margin-right: auto;
-            box-shadow: 0 1px 2px rgba(0,0,0,0.1);
-        }
-        
-        .message.my-message {
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            color: white;
-            margin-left: auto;
-            box-shadow: 0 2px 8px rgba(102, 126, 234, 0.3);
-        }
-        
-        .message.system {
-            background: #e9ecef;
-            text-align: center;
-            max-width: 90%;
-            margin-left: auto;
-            margin-right: auto;
-            font-style: italic;
-            font-size: 12px;
-            color: #6c757d;
-        }
-        
-        .message-username {
-            font-weight: 600;
-            font-size: 11px;
-            margin-bottom: 4px;
-            color: #667eea;
-        }
-        
-        .my-message .message-username {
-            color: rgba(255,255,255,0.9);
-        }
-        
-        .message-text {
-            font-size: 14px;
-            line-height: 1.4;
-        }
-        
-        .message-time {
-            font-size: 10px;
-            opacity: 0.7;
-            margin-top: 4px;
-            text-align: right;
-        }
-        
-        .input-area {
-            padding: 15px;
-            background: white;
-            border-top: 1px solid #e9ecef;
-            display: flex;
-            gap: 10px;
-            flex-shrink: 0;
-            position: relative;
-        }
-        
-        .emoji-btn {
-            padding: 12px 16px;
-            background: #f8f9fa;
-            color: #6c757d;
-            border: 2px solid #e9ecef;
-            border-radius: 24px;
-            cursor: pointer;
-            font-size: 18px;
-            transition: all 0.2s;
-            -webkit-appearance: none;
-        }
-        
-        .emoji-btn:hover {
-            background: #e9ecef;
-            transform: translateY(-1px);
-        }
-        
-        .emoji-panel {
-            position: absolute;
-            bottom: 100%;
-            left: 15px;
-            right: 15px;
-            background: white;
-            border: 1px solid #e9ecef;
-            border-radius: 12px;
-            box-shadow: 0 4px 12px rgba(0,0,0,0.15);
-            padding: 12px;
-            display: none;
-            grid-template-columns: repeat(8, 1fr);
-            gap: 8px;
-            margin-bottom: 10px;
-            max-height: 200px;
-            overflow-y: auto;
-        }
-        
-        .emoji-panel.show {
-            display: grid;
-        }
-        
-        .emoji-item {
-            font-size: 20px;
-            padding: 8px;
-            text-align: center;
-            cursor: pointer;
-            border-radius: 8px;
-            transition: background 0.2s;
-        }
-        
-        .emoji-item:hover {
-            background: #f0f0f0;
-        }
-        
-        #messageInput {
-            flex: 1;
-            padding: 12px 16px;
-            border: 2px solid #e9ecef;
-            border-radius: 24px;
-            font-size: 14px;
-            outline: none;
-            transition: border-color 0.2s;
-            font-family: inherit;
-        }
-        
-        #messageInput:focus {
-            border-color: #667eea;
-        }
-        
-        #sendBtn {
-            padding: 12px 20px;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            color: white;
-            border: none;
-            border-radius: 24px;
-            cursor: pointer;
-            font-size: 14px;
-            font-weight: 500;
-            transition: transform 0.2s, box-shadow 0.2s;
-            font-family: inherit;
-            -webkit-appearance: none;
-        }
-        
-        #sendBtn:hover {
-            transform: translateY(-1px);
-            box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
-        }
-        
-        #sendBtn:active {
-            transform: translateY(0);
-        }
-        
-        .login-modal {
-            position: fixed;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
-            background: rgba(0,0,0,0.6);
-            backdrop-filter: blur(4px);
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            z-index: 1000;
-            padding: 20px;
-        }
-        
-        .login-box {
-            background: white;
-            padding: 30px 25px;
-            border-radius: 16px;
-            text-align: center;
-            width: 100%;
-            max-width: 360px;
-            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
-        }
-        
-        .login-box h2 {
-            margin-bottom: 10px;
-            color: #667eea;
-            font-size: 22px;
-        }
-        
-        .login-box p {
-            color: #6c757d;
-            font-size: 14px;
-            margin-bottom: 20px;
-        }
-        
-        .login-box input {
-            width: 100%;
-            padding: 14px 16px;
-            border: 2px solid #e9ecef;
-            border-radius: 12px;
-            font-size: 16px;
-            margin-bottom: 15px;
-            font-family: inherit;
-            transition: border-color 0.2s;
-        }
-        
-        .login-box input:focus {
-            outline: none;
-            border-color: #667eea;
-        }
-        
-        .login-box button {
-            width: 100%;
-            padding: 14px;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            color: white;
-            border: none;
-            border-radius: 12px;
-            font-size: 16px;
-            font-weight: 600;
-            cursor: pointer;
-            transition: transform 0.2s, box-shadow 0.2s;
-            font-family: inherit;
-            -webkit-appearance: none;
-        }
-        
-        .login-box button:hover {
-            transform: translateY(-1px);
-            box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
-        }
-        
-        .login-box button:active {
-            transform: translateY(0);
-        }
-        
-        .hidden {
-            display: none !important;
-        }
-        
-        /* Mobile optimizations */
-        @media (max-width: 480px) {
-            body {
-                padding: 0;
-                align-items: flex-start;
-            }
-            
-            .container {
-                height: 100vh;
-                max-height: none;
-                border-radius: 0;
-            }
-            
-            .header h1 {
-                font-size: 18px;
-            }
-            
-            .users-list {
-                font-size: 12px;
-            }
-            
-            .message {
-                max-width: 85%;
-                padding: 8px 12px;
-            }
-            
-            .message-text {
-                font-size: 13px;
-            }
-            
-            .input-area {
-                padding: 12px;
-            }
-            
-            #messageInput {
-                padding: 10px 14px;
-                font-size: 16px; /* Prevents zoom on iOS */
-            }
-            
-            #sendBtn {
-                padding: 10px 16px;
-            }
-            
-            .login-box {
-                padding: 25px 20px;
-                margin: 20px;
-            }
-        }
-        
-        /* Tablet optimizations */
-        @media (min-width: 481px) and (max-width: 768px) {
-            .container {
-                height: 85vh;
-            }
-            
-            .message {
-                max-width: 80%;
-            }
-        }
-        
-        /* Desktop optimizations */
-        @media (min-width: 769px) {
-            .container {
-                height: 80vh;
-            }
-        }
-        
-        /* Dark mode support */
-        @media (prefers-color-scheme: dark) {
-            .message.chat {
-                background: #2d3748;
-                color: #e2e8f0;
-            }
-            
-            .message.system {
-                background: #4a5568;
-                color: #cbd5e0;
-            }
-            
-            #messageInput {
-                background: #1a202c;
-                border-color: #4a5568;
-                color: #e2e8f0;
-            }
-            
-            .input-area {
-                background: #1a202c;
-                border-top-color: #4a5568;
-            }
-            
-            .messages {
-                background: #1a202c;
-            }
-        }
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); min-height: 100vh; }
+        .auth-container { display: flex; justify-content: center; align-items: center; min-height: 100vh; padding: 20px; }
+        .auth-box { background: white; padding: 40px; border-radius: 16px; box-shadow: 0 20px 60px rgba(0,0,0,0.3); width: 100%; max-width: 400px; }
+        .auth-box h2 { color: #667eea; margin-bottom: 10px; text-align: center; }
+        .auth-box p { color: #6c757d; text-align: center; margin-bottom: 20px; }
+        .auth-box input { width: 100%; padding: 14px; margin-bottom: 15px; border: 2px solid #e9ecef; border-radius: 12px; font-size: 16px; }
+        .auth-box input:focus { outline: none; border-color: #667eea; }
+        .auth-box button { width: 100%; padding: 14px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; border: none; border-radius: 12px; font-size: 16px; font-weight: 600; cursor: pointer; }
+        .auth-box button:hover { transform: translateY(-1px); box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4); }
+        .auth-box .toggle-link { text-align: center; margin-top: 20px; color: #667eea; cursor: pointer; }
+        .app-container { display: none; height: 100vh; }
+        .app-container.active { display: flex; }
+        .sidebar { width: 300px; background: white; border-right: 1px solid #e9ecef; display: flex; flex-direction: column; }
+        .sidebar-header { padding: 20px; border-bottom: 1px solid #e9ecef; }
+        .sidebar-header h2 { color: #667eea; margin-bottom: 10px; }
+        .user-info { display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px; }
+        .logout-btn { background: #dc3545; color: white; border: none; padding: 8px 16px; border-radius: 8px; cursor: pointer; }
+        .search-box { display: flex; gap: 10px; margin-bottom: 15px; }
+        .search-box input { flex: 1; padding: 10px; border: 2px solid #e9ecef; border-radius: 8px; }
+        .search-box button { padding: 10px 16px; background: #667eea; color: white; border: none; border-radius: 8px; cursor: pointer; }
+        .tabs { display: flex; border-bottom: 1px solid #e9ecef; }
+        .tab { flex: 1; padding: 12px; text-align: center; cursor: pointer; border: none; background: none; }
+        .tab.active { color: #667eea; border-bottom: 2px solid #667eea; }
+        .chat-list { flex: 1; overflow-y: auto; }
+        .chat-item { padding: 15px 20px; border-bottom: 1px solid #f0f0f0; cursor: pointer; transition: background 0.2s; }
+        .chat-item:hover { background: #f8f9fa; }
+        .chat-item.active { background: #e7f3ff; }
+        .chat-item-name { font-weight: 600; margin-bottom: 4px; }
+        .chat-item-preview { color: #6c757d; font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .main-chat { flex: 1; display: flex; flex-direction: column; background: #f8f9fa; }
+        .chat-header { padding: 20px; background: white; border-bottom: 1px solid #e9ecef; display: flex; justify-content: space-between; align-items: center; }
+        .chat-header h3 { color: #333; }
+        .members-list { color: #6c757d; font-size: 13px; }
+        .messages-container { flex: 1; padding: 20px; overflow-y: auto; }
+        .message { margin-bottom: 15px; max-width: 70%; }
+        .message.my-message { margin-left: auto; }
+        .message-bubble { padding: 12px 16px; border-radius: 18px; }
+        .message.chat .message-bubble { background: white; border-bottom-left-radius: 4px; }
+        .message.my-message .message-bubble { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; border-bottom-right-radius: 4px; }
+        .message-sender { font-size: 12px; color: #667eea; margin-bottom: 4px; font-weight: 600; }
+        .message.my-message .message-sender { color: rgba(255,255,255,0.9); }
+        .message-time { font-size: 11px; opacity: 0.7; margin-top: 4px; text-align: right; }
+        .input-area { padding: 20px; background: white; border-top: 1px solid #e9ecef; display: flex; gap: 10px; }
+        .input-area input { flex: 1; padding: 14px 20px; border: 2px solid #e9ecef; border-radius: 24px; font-size: 16px; }
+        .input-area input:focus { outline: none; border-color: #667eea; }
+        .input-area button { padding: 14px 24px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; border: none; border-radius: 24px; cursor: pointer; font-weight: 600; }
+        .modal { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); display: none; justify-content: center; align-items: center; z-index: 1000; }
+        .modal.active { display: flex; }
+        .modal-content { background: white; padding: 30px; border-radius: 16px; width: 100%; max-width: 500px; max-height: 80vh; overflow-y: auto; }
+        .modal-content h3 { margin-bottom: 20px; color: #667eea; }
+        .request-item { display: flex; justify-content: space-between; align-items: center; padding: 10px; border-bottom: 1px solid #f0f0f0; }
+        .request-actions { display: flex; gap: 10px; }
+        .btn-accept { background: #28a745; color: white; border: none; padding: 8px 16px; border-radius: 8px; cursor: pointer; }
+        .btn-decline { background: #dc3545; color: white; border: none; padding: 8px 16px; border-radius: 8px; cursor: pointer; }
+        .search-results { margin-top: 10px; max-height: 200px; overflow-y: auto; border: 1px solid #e9ecef; border-radius: 8px; }
+        .search-result-item { padding: 10px; border-bottom: 1px solid #f0f0f0; display: flex; justify-content: space-between; align-items: center; }
+        .btn-send-request { background: #667eea; color: white; border: none; padding: 6px 12px; border-radius: 6px; cursor: pointer; font-size: 13px; }
+        .hidden { display: none !important; }
+        .no-chats { text-align: center; color: #6c757d; padding: 40px; }
+        .create-chat-form { margin-top: 15px; }
+        .create-chat-form input { width: 100%; padding: 10px; margin-bottom: 10px; border: 2px solid #e9ecef; border-radius: 8px; }
+        .create-chat-form button { width: 100%; padding: 10px; background: #667eea; color: white; border: none; border-radius: 8px; cursor: pointer; }
     </style>
 </head>
 <body>
-    <div class="login-modal" id="loginModal">
-        <div class="login-box">
-            <h2>💬 Messenger</h2>
-            <p>Enter your username to join the chat</p>
-            <input type="text" id="usernameInput" placeholder="Your username" maxlength="20" autocomplete="off">
-            <button onclick="joinChat()">Join Chat</button>
+    <div class="auth-container" id="authContainer">
+        <div class="auth-box">
+            <h2 id="authTitle">💬 Login</h2>
+            <p id="authSubtitle">Enter your credentials</p>
+            <input type="text" id="usernameInput" placeholder="Username" maxlength="20">
+            <input type="password" id="passwordInput" placeholder="Password">
+            <button id="authBtn" onclick="handleAuth()">Login</button>
+            <div class="toggle-link" onclick="toggleAuthMode()">Don't have an account? Register</div>
+            <p id="authError" style="color: #dc3545; margin-top: 10px;"></p>
         </div>
     </div>
-    
-    <div class="container">
-        <div class="header">
-            <h1>💬 Messenger</h1>
-            <div class="users-list" id="usersList">Users: </div>
+
+    <div class="app-container" id="appContainer">
+        <div class="sidebar">
+            <div class="sidebar-header">
+                <div class="user-info">
+                    <h2 id="currentUser">User</h2>
+                    <button class="logout-btn" onclick="logout()">Logout</button>
+                </div>
+                <div class="search-box">
+                    <input type="text" id="userSearch" placeholder="Search users..." oninput="searchUsers()">
+                    <button onclick="searchUsers()">🔍</button>
+                </div>
+                <div id="searchResults" class="search-results hidden"></div>
+                <div class="tabs">
+                    <button class="tab active" onclick="showTab('chats')">Chats</button>
+                    <button class="tab" onclick="showTab('requests')">Requests (<span id="requestCount">0</span>)</button>
+                </div>
+            </div>
+            <div class="chat-list" id="chatList">
+                <div class="no-chats">No chats yet. Start a conversation!</div>
+            </div>
         </div>
-        
-        <div class="status disconnected" id="status">Connecting...</div>
-        
-        <div class="messages" id="messages"></div>
-        
-        <div class="input-area">
-            <button id="emojiBtn" class="emoji-btn" onclick="toggleEmojiPanel()">😊</button>
-            <div class="emoji-panel" id="emojiPanel"></div>
-            <input type="text" id="messageInput" placeholder="Type a message..." onkeypress="handleKeyPress(event)" autocomplete="off">
-            <button id="sendBtn" onclick="sendMessage()">Send</button>
+        <div class="main-chat">
+            <div class="chat-header" id="chatHeader">
+                <div>
+                    <h3 id="currentChatName">Select a chat</h3>
+                    <div class="members-list" id="chatMembers"></div>
+                </div>
+                <button onclick="showCreateChatModal()" style="padding: 10px 20px; background: #667eea; color: white; border: none; border-radius: 8px; cursor: pointer;">+ New Group</button>
+            </div>
+            <div class="messages-container" id="messagesContainer">
+                <div class="no-chats">Select a chat to start messaging</div>
+            </div>
+            <div class="input-area" id="inputArea" style="display: none;">
+                <input type="text" id="messageInput" placeholder="Type a message..." onkeypress="handleKeyPress(event)">
+                <button onclick="sendMessage()">Send</button>
+            </div>
+        </div>
+    </div>
+
+    <div class="modal" id="requestsModal">
+        <div class="modal-content">
+            <h3>Friend Requests</h3>
+            <div id="requestsList"></div>
+            <button onclick="closeModal('requestsModal')" style="margin-top: 20px; padding: 10px 20px; background: #6c757d; color: white; border: none; border-radius: 8px; cursor: pointer;">Close</button>
+        </div>
+    </div>
+
+    <div class="modal" id="createChatModal">
+        <div class="modal-content">
+            <h3>Create Group Chat</h3>
+            <div class="create-chat-form">
+                <input type="text" id="newChatName" placeholder="Group name">
+                <input type="text" id="newChatMembers" placeholder="Add members (comma-separated usernames)">
+                <button onclick="createGroupChat()">Create Group</button>
+            </div>
+            <button onclick="closeModal('createChatModal')" style="margin-top: 20px; padding: 10px 20px; background: #6c757d; color: white; border: none; border-radius: 8px; cursor: pointer;">Cancel</button>
         </div>
     </div>
 
     <script>
-        let ws;
-        let username = '';
-        
-        function joinChat() {
-            const input = document.getElementById('usernameInput');
-            username = input.value.trim();
+        let authToken = localStorage.getItem('authToken');
+        let currentUser = localStorage.getItem('currentUser');
+        let isLoginMode = true;
+        let currentChatId = null;
+        let ws = null;
+        let messagePollInterval = null;
+
+        if (authToken && currentUser) {
+            showApp();
+        }
+
+        function toggleAuthMode() {
+            isLoginMode = !isLoginMode;
+            document.getElementById('authTitle').textContent = isLoginMode ? '💬 Login' : '📝 Register';
+            document.getElementById('authSubtitle').textContent = isLoginMode ? 'Enter your credentials' : 'Create a new account';
+            document.getElementById('authBtn').textContent = isLoginMode ? 'Login' : 'Register';
+            document.querySelector('.toggle-link').textContent = isLoginMode ? "Don't have an account? Register" : 'Already have an account? Login';
+            document.getElementById('authError').textContent = '';
+        }
+
+        async function handleAuth() {
+            const username = document.getElementById('usernameInput').value.trim();
+            const password = document.getElementById('passwordInput').value;
             
-            if (!username) {
-                alert('Please enter a username');
+            if (!username || !password) {
+                document.getElementById('authError').textContent = 'Please fill in all fields';
                 return;
             }
+
+            const endpoint = isLoginMode ? '/api/user/login' : '/api/user/register';
             
-            // Connect to WebSocket server using current host and /ws path
+            try {
+                const response = await fetch(endpoint, {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({username, password})
+                });
+                const data = await response.json();
+                
+                if (data.success) {
+                    if (isLoginMode) {
+                        authToken = data.token;
+                        currentUser = data.username;
+                        localStorage.setItem('authToken', authToken);
+                        localStorage.setItem('currentUser', currentUser);
+                        showApp();
+                    } else {
+                        alert('Registration successful! Please login.');
+                        toggleAuthMode();
+                    }
+                } else {
+                    document.getElementById('authError').textContent = data.message;
+                }
+            } catch (error) {
+                document.getElementById('authError').textContent = 'Connection error';
+            }
+        }
+
+        function logout() {
+            localStorage.removeItem('authToken');
+            localStorage.removeItem('currentUser');
+            authToken = null;
+            currentUser = null;
+            if (ws) ws.close();
+            if (messagePollInterval) clearInterval(messagePollInterval);
+            document.getElementById('authContainer').style.display = 'flex';
+            document.getElementById('appContainer').classList.remove('active');
+        }
+
+        function showApp() {
+            document.getElementById('authContainer').style.display = 'none';
+            document.getElementById('appContainer').classList.add('active');
+            document.getElementById('currentUser').textContent = currentUser;
+            loadChats();
+            loadFriendRequests();
+            connectWebSocket();
+        }
+
+        function connectWebSocket() {
             const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-            const wsUrl = `${protocol}//${window.location.host}/ws`;
-            
+            const wsUrl = `${protocol}//${window.location.host}/ws?token=${authToken}&username=${currentUser}`;
             ws = new WebSocket(wsUrl);
             
             ws.onopen = () => {
-                document.getElementById('loginModal').classList.add('hidden');
-                document.getElementById('status').textContent = 'Connected';
-                document.getElementById('status').className = 'status connected';
-                
-                // Send join message
-                ws.send(JSON.stringify({
-                    action: 'join',
-                    username: username
-                }));
+                console.log('WebSocket connected');
             };
             
             ws.onmessage = (event) => {
                 const data = JSON.parse(event.data);
-                displayMessage(data);
+                if (data.type === 'new_message' && data.chat_id === currentChatId) {
+                    displayMessage(data.message, data.sender_username === currentUser);
+                } else if (data.type === 'chat_update') {
+                    loadChats();
+                } else if (data.type === 'friend_request') {
+                    loadFriendRequests();
+                }
             };
             
             ws.onclose = () => {
-                document.getElementById('status').textContent = 'Disconnected - Reconnecting...';
-                document.getElementById('status').className = 'status disconnected';
-                setTimeout(() => location.reload(), 3000);
-            };
-            
-            ws.onerror = (error) => {
-                console.error('WebSocket error:', error);
+                console.log('WebSocket disconnected, reconnecting...');
+                setTimeout(connectWebSocket, 3000);
             };
         }
-        
-        function displayMessage(data) {
-            const messagesDiv = document.getElementById('messages');
-            const msgDiv = document.createElement('div');
+
+        async function loadChats() {
+            const response = await fetch('/api/user/chats', {
+                headers: {'Authorization': 'Bearer ' + authToken}
+            });
+            const data = await response.json();
             
-            if (data.type === 'system') {
-                msgDiv.className = 'message system';
-                msgDiv.innerHTML = `<div class="message-text">${escapeHtml(data.message)}</div>`;
-                if (data.users && data.users.length > 0) {
-                    document.getElementById('usersList').textContent = 'Users: ' + data.users.join(', ');
-                } else if (data.users) {
-                    document.getElementById('usersList').textContent = 'Users: 0';
-                }
-            } else if (data.type === 'chat') {
-                const isMyMessage = data.username === username;
-                msgDiv.className = `message chat ${isMyMessage ? 'my-message' : ''}`;
-                msgDiv.innerHTML = `
-                    <div class="message-username">${escapeHtml(data.username)}</div>
-                    <div class="message-text">${escapeHtml(data.message)}</div>
-                    <div class="message-time">${formatTime(data.timestamp)}</div>
-                `;
+            const chatList = document.getElementById('chatList');
+            if (data.chats && data.chats.length > 0) {
+                chatList.innerHTML = '';
+                data.chats.forEach(chat => {
+                    const item = document.createElement('div');
+                    item.className = 'chat-item';
+                    item.onclick = () => openChat(chat.id, chat.name, chat.is_group);
+                    item.innerHTML = `
+                        <div class="chat-item-name">${escapeHtml(chat.name)}</div>
+                        <div class="chat-item-preview">${chat.is_group ? 'Group chat' : 'Private chat'}</div>
+                    `;
+                    chatList.appendChild(item);
+                });
+            } else {
+                chatList.innerHTML = '<div class="no-chats">No chats yet. Start a conversation!</div>';
+            }
+        }
+
+        async function openChat(chatId, chatName, isGroup) {
+            currentChatId = chatId;
+            document.getElementById('currentChatName').textContent = chatName;
+            document.getElementById('inputArea').style.display = 'flex';
+            
+            // Highlight active chat
+            document.querySelectorAll('.chat-item').forEach(item => item.classList.remove('active'));
+            event.target.closest('.chat-item')?.classList.add('active');
+            
+            // Load messages
+            await loadMessages(chatId);
+            
+            // Get members
+            const response = await fetch(`/api/chat/${chatId}/members`, {
+                headers: {'Authorization': 'Bearer ' + authToken}
+            });
+            const data = await response.json();
+            if (data.members) {
+                document.getElementById('chatMembers').textContent = isGroup ? 'Members: ' + data.members.join(', ') : 'Private chat';
             }
             
-            messagesDiv.appendChild(msgDiv);
-            messagesDiv.scrollTop = messagesDiv.scrollHeight;
+            // Start polling for new messages
+            if (messagePollInterval) clearInterval(messagePollInterval);
+            messagePollInterval = setInterval(() => loadMessages(chatId), 2000);
         }
-        
-        function sendMessage() {
+
+        async function loadMessages(chatId) {
+            const response = await fetch(`/api/chat/${chatId}/messages`, {
+                headers: {'Authorization': 'Bearer ' + authToken}
+            });
+            const data = await response.json();
+            
+            const container = document.getElementById('messagesContainer');
+            if (data.messages && data.messages.length > 0) {
+                container.innerHTML = '';
+                data.messages.forEach(msg => {
+                    displayMessage(msg, msg.sender_username === currentUser);
+                });
+                container.scrollTop = container.scrollHeight;
+            }
+        }
+
+        function displayMessage(msg, isMyMessage) {
+            const container = document.getElementById('messagesContainer');
+            const div = document.createElement('div');
+            div.className = `message ${isMyMessage ? 'my-message' : 'chat'}`;
+            div.innerHTML = `
+                <div class="message-bubble">
+                    ${!isMyMessage ? `<div class="message-sender">${escapeHtml(msg.sender_username)}</div>` : ''}
+                    <div>${escapeHtml(msg.message)}</div>
+                    <div class="message-time">${formatTime(msg.timestamp)}</div>
+                </div>
+            `;
+            container.appendChild(div);
+            container.scrollTop = container.scrollHeight;
+        }
+
+        async function sendMessage() {
             const input = document.getElementById('messageInput');
             const message = input.value.trim();
             
-            if (message && ws && ws.readyState === WebSocket.OPEN) {
-                ws.send(JSON.stringify({
-                    action: 'message',
-                    message: message
-                }));
-                input.value = '';
-                input.focus();
-            }
-        }
-        
-        function handleKeyPress(event) {
-            if (event.key === 'Enter') {
-                sendMessage();
-            }
-        }
-        
-        function escapeHtml(text) {
-            if (!text) return '';
-            const div = document.createElement('div');
-            div.textContent = text;
-            return div.innerHTML;
-        }
-        
-        function formatTime(timestamp) {
-            if (!timestamp) return '';
-            try {
-                const date = new Date(timestamp);
-                return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-            } catch (e) {
-                return '';
-            }
-        }
-        
-        // Allow login with Enter key
-        document.getElementById('usernameInput').addEventListener('keypress', (e) => {
-            if (e.key === 'Enter') {
-                joinChat();
-            }
-        });
-        
-        // Auto-focus username input on load
-        window.addEventListener('load', () => {
-            document.getElementById('usernameInput').focus();
-            initEmojiPanel();
-        });
-        
-        // Popular emojis list
-        const emojis = ['😀','😃','😄','😁','😆','😅','🤣','😂','🙂','🙃','😉','😊','😇','🥰','😍','🤩','😘','😗','😚','😙','😋','😛','😜','🤪','😝','🤑','🤗','🤭','🤫','🤔','🤐','🤨','😐','😑','😶','😏','😒','🙄','😬','🤥','😌','😔','😪','🤤','😴','😷','🤒','🤕','🤢','🤮','🤧','🥵','🥶','🥴','😵','🤯','🤠','🥳','😎','🤓','🧐','😕','😟','🙁','☹️','😮','😯','😲','😳','🥺','😦','😧','😨','😰','😥','😢','😭','😱','😖','😣','😞','😓','😩','😫','🥱','😤','😡','😠','🤬','😈','👿','💀','☠️','💩','🤡','👹','👺','👻','👽','👾','🤖','😺','😸','😹','😻','😼','😽','🙀','😿','😾','🙈','🙉','🙊','💋','💌','💘','💝','💖','💗','💓','💞','💕','💟','❣️','💔','❤️','🧡','💛','💚','💙','💜','🤎','🖤','🤍','👍','👎','👊','✊','🤛','🤜','🤞','✌️','🤟','🤘','👌','🤌','🤏','👈','👉','👆','👇','☝️','✋','🤚','🖐️','🖖','👋','🤙','💪','🖕','✍️','🙏','🦶','🦵','🦿','🦾','🦿'];
-        
-        function initEmojiPanel() {
-            const panel = document.getElementById('emojiPanel');
-            emojis.forEach(emoji => {
-                const span = document.createElement('span');
-                span.className = 'emoji-item';
-                span.textContent = emoji;
-                span.onclick = () => insertEmoji(emoji);
-                panel.appendChild(span);
-            });
-        }
-        
-        function toggleEmojiPanel() {
-            const panel = document.getElementById('emojiPanel');
-            panel.classList.toggle('show');
-        }
-        
-        function insertEmoji(emoji) {
-            const input = document.getElementById('messageInput');
-            input.value += emoji;
-            input.focus();
-            document.getElementById('emojiPanel').classList.remove('show');
-        }
-        
-        // Close emoji panel when clicking outside
-        document.addEventListener('click', (e) => {
-            const panel = document.getElementById('emojiPanel');
-            const btn = document.getElementById('emojiBtn');
-            if (!panel.contains(e.target) && e.target !== btn) {
-                panel.classList.remove('show');
-            }
-        });
-    </script>
-</body>
-</html>
-"""
-
-# Admin panel HTML page
-ADMIN_PAGE = """
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Admin Panel - Messenger</title>
-    <style>
-        * { margin: 0; padding: 0; box-sizing: border-box; }
-        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #f5f6fa; min-height: 100vh; }
-        .header { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 20px; display: flex; justify-content: space-between; align-items: center; }
-        .header h1 { font-size: 24px; }
-        .logout-btn { background: rgba(255,255,255,0.2); border: none; color: white; padding: 8px 16px; border-radius: 6px; cursor: pointer; }
-        .logout-btn:hover { background: rgba(255,255,255,0.3); }
-        .container { max-width: 1200px; margin: 0 auto; padding: 20px; }
-        .tabs { display: flex; gap: 10px; margin-bottom: 20px; }
-        .tab { padding: 12px 24px; background: white; border: none; border-radius: 8px; cursor: pointer; font-weight: 500; transition: all 0.2s; }
-        .tab.active { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; }
-        .tab:hover:not(.active) { background: #e9ecef; }
-        .panel { background: white; border-radius: 12px; padding: 20px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
-        .login-form { max-width: 400px; margin: 100px auto; text-align: center; }
-        .login-form input { width: 100%; padding: 14px; margin-bottom: 15px; border: 2px solid #e9ecef; border-radius: 8px; font-size: 16px; }
-        .login-form button { width: 100%; padding: 14px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; border: none; border-radius: 8px; font-size: 16px; cursor: pointer; }
-        table { width: 100%; border-collapse: collapse; }
-        th, td { padding: 12px; text-align: left; border-bottom: 1px solid #e9ecef; }
-        th { background: #f8f9fa; font-weight: 600; }
-        .message-text { max-width: 400px; word-break: break-word; }
-        .btn { padding: 6px 12px; border: none; border-radius: 6px; cursor: pointer; font-size: 13px; }
-        .btn-danger { background: #dc3545; color: white; }
-        .btn-success { background: #28a745; color: white; }
-        .btn-warning { background: #ffc107; color: #212529; }
-        .blocked { background: #ffebee; }
-        .status-badge { padding: 4px 8px; border-radius: 4px; font-size: 12px; }
-        .status-active { background: #d4edda; color: #155724; }
-        .status-blocked { background: #f8d7da; color: #721c24; }
-        .actions { display: flex; gap: 10px; }
-        .clear-btn { margin-top: 20px; }
-        .hidden { display: none !important; }
-        .error { color: #dc3545; margin-top: 10px; }
-        .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 20px; margin-bottom: 20px; }
-        .stat-card { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 20px; border-radius: 12px; text-align: center; }
-        .stat-value { font-size: 32px; font-weight: bold; }
-        .stat-label { font-size: 14px; opacity: 0.9; }
-    </style>
-</head>
-<body>
-    <div id="loginSection">
-        <div class="panel login-form">
-            <h2>🔐 Admin Login</h2>
-            <p style="color: #6c757d; margin: 10px 0 20px;">Enter your credentials to access the admin panel</p>
-            <input type="text" id="adminUsername" placeholder="Username" value="admin">
-            <input type="password" id="adminPassword" placeholder="Password">
-            <button onclick="login()">Login</button>
-            <p class="error" id="loginError"></p>
-        </div>
-    </div>
-    
-    <div id="adminSection" class="hidden">
-        <div class="header">
-            <h1>🛡️ Admin Panel</h1>
-            <button class="logout-btn" onclick="logout()">Logout</button>
-        </div>
-        
-        <div class="container">
-            <div class="stats">
-                <div class="stat-card">
-                    <div class="stat-value" id="totalMessages">0</div>
-                    <div class="stat-label">Total Messages</div>
-                </div>
-                <div class="stat-card">
-                    <div class="stat-value" id="totalUsers">0</div>
-                    <div class="stat-label">Total Users</div>
-                </div>
-                <div class="stat-card">
-                    <div class="stat-value" id="blockedUsers">0</div>
-                    <div class="stat-label">Blocked Users</div>
-                </div>
-            </div>
+            if (!message || !currentChatId) return;
             
-            <div class="tabs">
-                <button class="tab active" onclick="showTab('messages')">📝 Messages</button>
-                <button class="tab" onclick="showTab('users')">👥 Users</button>
-            </div>
-            
-            <div id="messagesPanel" class="panel">
-                <h2 style="margin-bottom: 15px;">Message History</h2>
-                <table>
-                    <thead>
-                        <tr>
-                            <th>ID</th>
-                            <th>User</th>
-                            <th>Message</th>
-                            <th>Time</th>
-                            <th>Actions</th>
-                        </tr>
-                    </thead>
-                    <tbody id="messagesTable"></tbody>
-                </table>
-                <button class="btn btn-danger clear-btn" onclick="clearAllMessages()">🗑️ Clear All Messages</button>
-            </div>
-            
-            <div id="usersPanel" class="panel hidden">
-                <h2 style="margin-bottom: 15px;">User Management</h2>
-                <table>
-                    <thead>
-                        <tr>
-                            <th>Username</th>
-                            <th>Status</th>
-                            <th>First Seen</th>
-                            <th>Last Seen</th>
-                            <th>Actions</th>
-                        </tr>
-                    </thead>
-                    <tbody id="usersTable"></tbody>
-                </table>
-            </div>
-        </div>
-    </div>
-
-    <script>
-        let authToken = localStorage.getItem('adminToken');
-        
-        if (authToken) {
-            showAdminSection();
-        }
-        
-        function login() {
-            const username = document.getElementById('adminUsername').value;
-            const password = document.getElementById('adminPassword').value;
-            
-            fetch('/api/admin/login', {
+            await fetch(`/api/chat/${currentChatId}/messages`, {
                 method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({username, password})
-            })
-            .then(r => r.json())
-            .then(data => {
-                if (data.success) {
-                    authToken = data.token;
-                    localStorage.setItem('adminToken', authToken);
-                    showAdminSection();
-                    loadMessages();
-                    loadUsers();
-                } else {
-                    document.getElementById('loginError').textContent = data.error || 'Login failed';
-                }
+                headers: {'Authorization': 'Bearer ' + authToken, 'Content-Type': 'application/json'},
+                body: JSON.stringify({message})
             });
+            
+            input.value = '';
+            loadMessages(currentChatId);
         }
-        
-        function logout() {
-            localStorage.removeItem('adminToken');
-            authToken = null;
-            document.getElementById('loginSection').classList.remove('hidden');
-            document.getElementById('adminSection').classList.add('hidden');
+
+        function handleKeyPress(event) {
+            if (event.key === 'Enter') sendMessage();
         }
-        
-        function showAdminSection() {
-            document.getElementById('loginSection').classList.add('hidden');
-            document.getElementById('adminSection').classList.remove('hidden');
+
+        async function searchUsers() {
+            const query = document.getElementById('userSearch').value.trim();
+            if (query.length < 2) {
+                document.getElementById('searchResults').classList.add('hidden');
+                return;
+            }
+            
+            const response = await fetch(`/api/users/search?q=${encodeURIComponent(query)}`, {
+                headers: {'Authorization': 'Bearer ' + authToken}
+            });
+            const data = await response.json();
+            
+            const resultsDiv = document.getElementById('searchResults');
+            if (data.users && data.users.length > 0) {
+                resultsDiv.classList.remove('hidden');
+                resultsDiv.innerHTML = data.users.map(user => `
+                    <div class="search-result-item">
+                        <span>${escapeHtml(user)}</span>
+                        <button class="btn-send-request" onclick="sendFriendRequest('${escapeHtml(user)}')">Add Friend</button>
+                    </div>
+                `).join('');
+            } else {
+                resultsDiv.classList.add('hidden');
+            }
         }
-        
+
+        async function sendFriendRequest(targetUser) {
+            await fetch('/api/friend/request', {
+                method: 'POST',
+                headers: {'Authorization': 'Bearer ' + authToken, 'Content-Type': 'application/json'},
+                body: JSON.stringify({target_user: targetUser})
+            });
+            document.getElementById('userSearch').value = '';
+            document.getElementById('searchResults').classList.add('hidden');
+            alert('Friend request sent!');
+        }
+
+        async function loadFriendRequests() {
+            const response = await fetch('/api/friend/requests', {
+                headers: {'Authorization': 'Bearer ' + authToken}
+            });
+            const data = await response.json();
+            
+            document.getElementById('requestCount').textContent = data.requests ? data.requests.length : 0;
+        }
+
         function showTab(tab) {
             document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
             event.target.classList.add('active');
             
-            document.getElementById('messagesPanel').classList.add('hidden');
-            document.getElementById('usersPanel').classList.add('hidden');
-            
-            if (tab === 'messages') {
-                document.getElementById('messagesPanel').classList.remove('hidden');
-                loadMessages();
-            } else {
-                document.getElementById('usersPanel').classList.remove('hidden');
-                loadUsers();
+            if (tab === 'requests') {
+                showRequestsModal();
             }
         }
-        
-        function loadMessages() {
-            fetch('/api/admin/messages', {headers: {'Authorization': 'Bearer ' + authToken}})
-            .then(r => r.json())
-            .then(data => {
-                const tbody = document.getElementById('messagesTable');
-                tbody.innerHTML = '';
-                
-                if (data.messages && data.messages.length > 0) {
-                    data.messages.forEach(msg => {
-                        const row = document.createElement('tr');
-                        row.innerHTML = `
-                            <td>${msg.id}</td>
-                            <td><strong>${escapeHtml(msg.username)}</strong></td>
-                            <td class="message-text">${escapeHtml(msg.message)}</td>
-                            <td>${formatDate(msg.created_at)}</td>
-                            <td><button class="btn btn-danger" onclick="deleteMessage(${msg.id})">Delete</button></td>
-                        `;
-                        tbody.appendChild(row);
-                    });
-                    document.getElementById('totalMessages').textContent = data.messages.length;
-                } else {
-                    tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;color:#6c757d;">No messages found</td></tr>';
-                }
-            });
-        }
-        
-        function loadUsers() {
-            fetch('/api/admin/users', {headers: {'Authorization': 'Bearer ' + authToken}})
-            .then(r => r.json())
-            .then(data => {
-                const tbody = document.getElementById('usersTable');
-                tbody.innerHTML = '';
-                
-                let blockedCount = 0;
-                
-                if (data.users && data.users.length > 0) {
-                    data.users.forEach(user => {
-                        if (user.is_blocked) blockedCount++;
-                        const row = document.createElement('tr');
-                        row.className = user.is_blocked ? 'blocked' : '';
-                        row.innerHTML = `
-                            <td><strong>${escapeHtml(user.username)}</strong></td>
-                            <td><span class="status-badge ${user.is_blocked ? 'status-blocked' : 'status-active'}">${user.is_blocked ? 'Blocked' : 'Active'}</span></td>
-                            <td>${formatDate(user.first_seen)}</td>
-                            <td>${formatDate(user.last_seen)}</td>
-                            <td class="actions">
-                                <button class="btn ${user.is_blocked ? 'btn-success' : 'btn-warning'}" onclick="toggleBlock('${escapeHtml(user.username)}', ${!user.is_blocked})">
-                                    ${user.is_blocked ? 'Unblock' : 'Block'}
-                                </button>
-                            </td>
-                        `;
-                        tbody.appendChild(row);
-                    });
-                    document.getElementById('totalUsers').textContent = data.users.length;
-                    document.getElementById('blockedUsers').textContent = blockedCount;
-                } else {
-                    tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;color:#6c757d;">No users found</td></tr>';
-                }
-            });
-        }
-        
-        function deleteMessage(id) {
-            if (!confirm('Are you sure you want to delete this message?')) return;
-            
-            fetch('/api/admin/delete-message', {
-                method: 'POST',
-                headers: {'Authorization': 'Bearer ' + authToken, 'Content-Type': 'application/json'},
-                body: JSON.stringify({id})
-            }).then(() => loadMessages());
-        }
-        
-        function toggleBlock(username, blocked) {
-            fetch('/api/admin/block-user', {
-                method: 'POST',
-                headers: {'Authorization': 'Bearer ' + authToken, 'Content-Type': 'application/json'},
-                body: JSON.stringify({username, blocked})
-            }).then(() => loadUsers());
-        }
-        
-        function clearAllMessages() {
-            if (!confirm('Are you sure you want to delete ALL messages? This cannot be undone!')) return;
-            
-            fetch('/api/admin/clear-messages', {
-                method: 'POST',
+
+        async function showRequestsModal() {
+            const response = await fetch('/api/friend/requests', {
                 headers: {'Authorization': 'Bearer ' + authToken}
-            }).then(() => loadMessages());
+            });
+            const data = await response.json();
+            
+            const list = document.getElementById('requestsList');
+            if (data.requests && data.requests.length > 0) {
+                list.innerHTML = data.requests.map(req => `
+                    <div class="request-item">
+                        <span>${escapeHtml(req.sender)}</span>
+                        <div class="request-actions">
+                            <button class="btn-accept" onclick="respondToRequest('${escapeHtml(req.sender)}', true)">Accept</button>
+                            <button class="btn-decline" onclick="respondToRequest('${escapeHtml(req.sender)}', false)">Decline</button>
+                        </div>
+                    </div>
+                `).join('');
+            } else {
+                list.innerHTML = '<p style="text-align: center; color: #6c757d;">No pending requests</p>';
+            }
+            document.getElementById('requestsModal').classList.add('active');
         }
-        
+
+        async function respondToRequest(sender, accept) {
+            await fetch('/api/friend/respond', {
+                method: 'POST',
+                headers: {'Authorization': 'Bearer ' + authToken, 'Content-Type': 'application/json'},
+                body: JSON.stringify({sender, accept})
+            });
+            loadFriendRequests();
+            showRequestsModal();
+            loadChats();
+        }
+
+        function showCreateChatModal() {
+            document.getElementById('createChatModal').classList.add('active');
+        }
+
+        async function createGroupChat() {
+            const name = document.getElementById('newChatName').value.trim();
+            const membersStr = document.getElementById('newChatMembers').value.trim();
+            const members = membersStr ? membersStr.split(',').map(m => m.trim()).filter(m => m) : [];
+            
+            if (!name) {
+                alert('Please enter a group name');
+                return;
+            }
+            
+            const response = await fetch('/api/user/chats', {
+                method: 'POST',
+                headers: {'Authorization': 'Bearer ' + authToken, 'Content-Type': 'application/json'},
+                body: JSON.stringify({name, members})
+            });
+            const data = await response.json();
+            
+            if (data.success) {
+                closeModal('createChatModal');
+                document.getElementById('newChatName').value = '';
+                document.getElementById('newChatMembers').value = '';
+                loadChats();
+            } else {
+                alert(data.message);
+            }
+        }
+
+        function closeModal(modalId) {
+            document.getElementById(modalId).classList.remove('active');
+        }
+
         function escapeHtml(text) {
             const div = document.createElement('div');
             div.textContent = text;
             return div.innerHTML;
         }
-        
-        function formatDate(isoString) {
-            if (!isoString) return '-';
-            const date = new Date(isoString);
-            return date.toLocaleString();
+
+        function formatTime(timestamp) {
+            if (!timestamp) return '';
+            const date = new Date(timestamp);
+            return date.toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'});
         }
     </script>
 </body>
 </html>
 """
-
-
-async def broadcast(message: str, sender: str = None):
-    """Broadcast message to all connected clients."""
-    if clients:
-        for client in clients.values():
-            try:
-                await client.send_str(message)
-            except Exception:
-                pass
-
 
 async def handle_client(request: web.Request):
     """Handle WebSocket client connection."""
     ws = web.WebSocketResponse()
     await ws.prepare(request)
     
-    username = None
+    token = request.query.get('token')
+    username = request.query.get('username')
+    
+    if not token or not validate_user_session(token):
+        await ws.close()
+        return ws
+    
+    if username:
+        clients[username] = ws
     
     try:
         async for msg in ws:
@@ -1301,39 +943,36 @@ async def handle_client(request: web.Request):
                 data = json.loads(msg.data)
                 action = data.get("action")
                 
-                if action == "join":
-                    username = data.get("username")
-                    if username and username not in usernames:
-                        usernames.add(username)
-                        clients[username] = ws
+                if action == "message" and username:
+                    chat_id = data.get("chat_id")
+                    message = data.get("message")
+                    if chat_id and message:
+                        timestamp = datetime.now().isoformat()
+                        save_chat_message(chat_id, username, message, timestamp)
                         
-                        # Notify everyone about new user
-                        join_msg = json.dumps({
-                            "type": "system",
-                            "message": f"{username} joined the chat",
-                            "users": list(usernames),
-                            "timestamp": datetime.now().isoformat()
+                        # Notify all members of the chat
+                        members = get_chat_members(chat_id)
+                        chat_msg = json.dumps({
+                            "type": "new_message",
+                            "chat_id": chat_id,
+                            "sender_username": username,
+                            "message": message,
+                            "timestamp": timestamp
                         })
-                        await broadcast(join_msg)
-                        
-                elif action == "message" and username:
-                    # Check if user is blocked
-                    if username in blocked_users:
-                        continue
-                    msg_data = data.get("message", "")
-                    timestamp = datetime.now().isoformat()
-                    
-                    # Save message to database
-                    save_message(username, msg_data, timestamp)
-                    
-                    chat_msg = json.dumps({
-                        "type": "chat",
-                        "username": username,
-                        "message": msg_data,
-                        "timestamp": timestamp
-                    })
-                    await broadcast(chat_msg)
-                    
+                        for member in members:
+                            if member in clients:
+                                try:
+                                    await clients[member].send_str(chat_msg)
+                                except:
+                                    pass
+                                
+                                # Also notify about chat update
+                                update_msg = json.dumps({"type": "chat_update"})
+                                try:
+                                    await clients[member].send_str(update_msg)
+                                except:
+                                    pass
+                                
             elif msg.type == aiohttp.WSMsgType.ERROR:
                 break
                 
@@ -1341,133 +980,10 @@ async def handle_client(request: web.Request):
         pass
     finally:
         if username:
-            usernames.discard(username)
             clients.pop(username, None)
-            
-            # Notify about user leaving
-            leave_msg = json.dumps({
-                "type": "system",
-                "message": f"{username} left the chat",
-                "users": list(usernames),
-                "timestamp": datetime.now().isoformat()
-            })
-            await broadcast(leave_msg)
     
     return ws
 
-
-async def http_handler(request: web.Request):
-    """Handle HTTP requests for the main page."""
-    return web.Response(text=HTML_PAGE, content_type='text/html')
-
-
-async def admin_page_handler(request: web.Request):
-    """Handle HTTP requests for the admin page."""
-    return web.Response(text=ADMIN_PAGE, content_type='text/html')
-
-
-async def admin_login_handler(request: web.Request):
-    """Handle admin login."""
-    try:
-        data = await request.json()
-        username = data.get('username', '')
-        password = data.get('password', '')
-        
-        # Check credentials
-        if username == ADMIN_USERNAME and hashlib.sha256(password.encode()).hexdigest() == ADMIN_PASSWORD_HASH:
-            token = create_admin_session()
-            return web.json_response({'success': True, 'token': token})
-        else:
-            return web.json_response({'success': False, 'error': 'Invalid credentials'}, status=401)
-    except Exception as e:
-        return web.json_response({'success': False, 'error': str(e)}, status=400)
-
-
-async def admin_messages_handler(request: web.Request):
-    """Get all messages for admin panel."""
-    token = request.headers.get('Authorization', '').replace('Bearer ', '')
-    
-    if not validate_admin_session(token):
-        return web.json_response({'error': 'Unauthorized'}, status=401)
-    
-    limit = int(request.query.get('limit', 100))
-    offset = int(request.query.get('offset', 0))
-    
-    messages = get_all_messages(limit, offset)
-    return web.json_response({'messages': messages})
-
-
-async def admin_users_handler(request: web.Request):
-    """Get all users for admin panel."""
-    token = request.headers.get('Authorization', '').replace('Bearer ', '')
-    
-    if not validate_admin_session(token):
-        return web.json_response({'error': 'Unauthorized'}, status=401)
-    
-    users = get_all_users()
-    return web.json_response({'users': users})
-
-
-async def admin_block_user_handler(request: web.Request):
-    """Block or unblock a user."""
-    token = request.headers.get('Authorization', '').replace('Bearer ', '')
-    
-    if not validate_admin_session(token):
-        return web.json_response({'error': 'Unauthorized'}, status=401)
-    
-    try:
-        data = await request.json()
-        username = data.get('username')
-        blocked = data.get('blocked', False)
-        
-        if not username:
-            return web.json_response({'error': 'Username required'}, status=400)
-        
-        block_user(username, blocked)
-        
-        # Update blocked users cache
-        if blocked:
-            blocked_users.add(username)
-        else:
-            blocked_users.discard(username)
-        
-        return web.json_response({'success': True})
-    except Exception as e:
-        return web.json_response({'error': str(e)}, status=400)
-
-
-async def admin_delete_message_handler(request: web.Request):
-    """Delete a message."""
-    token = request.headers.get('Authorization', '').replace('Bearer ', '')
-    
-    if not validate_admin_session(token):
-        return web.json_response({'error': 'Unauthorized'}, status=401)
-    
-    try:
-        data = await request.json()
-        message_id = data.get('id')
-        
-        if not message_id:
-            return web.json_response({'error': 'Message ID required'}, status=400)
-        
-        delete_message(message_id)
-        return web.json_response({'success': True})
-    except Exception as e:
-        return web.json_response({'error': str(e)}, status=400)
-
-
-async def admin_clear_messages_handler(request: web.Request):
-    """Clear all messages."""
-    token = request.headers.get('Authorization', '').replace('Bearer ', '')
-    
-    if not validate_admin_session(token):
-        return web.json_response({'error': 'Unauthorized'}, status=401)
-    
-    clear_all_messages()
-    return web.json_response({'success': True})
-
-
-# User authentication API handlers
 async def user_register_handler(request: web.Request):
     """Handle user registration."""
     try:
@@ -1479,13 +995,9 @@ async def user_register_handler(request: web.Request):
             return web.json_response({'success': False, 'message': 'Username and password required'}, status=400)
         
         result = register_user(username, password)
-        if result['success']:
-            return web.json_response(result)
-        else:
-            return web.json_response(result, status=400)
+        return web.json_response(result) if result['success'] else web.json_response(result, status=400)
     except Exception as e:
         return web.json_response({'success': False, 'message': str(e)}, status=500)
-
 
 async def user_login_handler(request: web.Request):
     """Handle user login."""
@@ -1498,13 +1010,9 @@ async def user_login_handler(request: web.Request):
             return web.json_response({'success': False, 'message': 'Username and password required'}, status=400)
         
         result = login_user(username, password)
-        if result['success']:
-            return web.json_response(result)
-        else:
-            return web.json_response(result, status=401)
+        return web.json_response(result) if result['success'] else web.json_response(result, status=401)
     except Exception as e:
         return web.json_response({'success': False, 'message': str(e)}, status=500)
-
 
 async def user_chats_handler(request: web.Request):
     """Get user's chats."""
@@ -1517,9 +1025,8 @@ async def user_chats_handler(request: web.Request):
     chats = get_user_chats(username)
     return web.json_response({'chats': chats})
 
-
 async def create_chat_handler(request: web.Request):
-    """Create a new chat."""
+    """Create a new group chat."""
     token = request.headers.get('Authorization', '').replace('Bearer ', '')
     username = validate_user_session(token)
     
@@ -1529,20 +1036,28 @@ async def create_chat_handler(request: web.Request):
     try:
         data = await request.json()
         name = data.get('name', '').strip()
+        members = data.get('members', [])
         
         if not name:
             return web.json_response({'success': False, 'message': 'Chat name required'}, status=400)
         
-        result = create_chat(name, username)
+        result = create_chat(name, username, members)
         if result['success']:
+            # Notify members
+            update_msg = json.dumps({"type": "chat_update"})
+            for member in members:
+                if member in clients:
+                    try:
+                        await clients[member].send_str(update_msg)
+                    except:
+                        pass
             return web.json_response(result)
         else:
             return web.json_response(result, status=400)
     except Exception as e:
         return web.json_response({'success': False, 'message': str(e)}, status=500)
 
-
-async def get_chat_messages_handler(request: web.Request) -> web.Response:
+async def get_chat_messages_handler(request: web.Request):
     """Get messages for a specific chat."""
     token = request.headers.get('Authorization', '').replace('Bearer ', '')
     username = validate_user_session(token)
@@ -1551,17 +1066,15 @@ async def get_chat_messages_handler(request: web.Request) -> web.Response:
         return web.json_response({'error': 'Unauthorized'}, status=401)
     
     chat_id = int(request.match_info['chat_id'])
-    
-    # Check if user is member of the chat
     members = get_chat_members(chat_id)
+    
     if username not in members:
         return web.json_response({'error': 'Access denied'}, status=403)
     
     messages = get_chat_messages(chat_id)
     return web.json_response({'messages': messages})
 
-
-async def send_chat_message_handler(request: web.Request) -> web.Response:
+async def send_chat_message_handler(request: web.Request):
     """Send a message to a chat."""
     token = request.headers.get('Authorization', '').replace('Bearer ', '')
     username = validate_user_session(token)
@@ -1570,9 +1083,8 @@ async def send_chat_message_handler(request: web.Request) -> web.Response:
         return web.json_response({'error': 'Unauthorized'}, status=401)
     
     chat_id = int(request.match_info['chat_id'])
-    
-    # Check if user is member of the chat
     members = get_chat_members(chat_id)
+    
     if username not in members:
         return web.json_response({'error': 'Access denied'}, status=403)
     
@@ -1586,20 +1098,27 @@ async def send_chat_message_handler(request: web.Request) -> web.Response:
         timestamp = datetime.now().isoformat()
         save_chat_message(chat_id, username, message, timestamp)
         
-        return web.json_response({
-            'success': True,
-            'message': {
-                'username': username,
-                'message': message,
-                'timestamp': timestamp
-            }
+        # Notify all members
+        chat_msg = json.dumps({
+            "type": "new_message",
+            "chat_id": chat_id,
+            "sender_username": username,
+            "message": message,
+            "timestamp": timestamp
         })
+        for member in members:
+            if member in clients:
+                try:
+                    await clients[member].send_str(chat_msg)
+                except:
+                    pass
+        
+        return web.json_response({'success': True})
     except Exception as e:
         return web.json_response({'success': False, 'message': str(e)}, status=500)
 
-
-async def add_member_to_chat_handler(request: web.Request) -> web.Response:
-    """Add a member to a chat."""
+async def get_chat_members_handler(request: web.Request):
+    """Get members of a chat."""
     token = request.headers.get('Authorization', '').replace('Bearer ', '')
     username = validate_user_session(token)
     
@@ -1607,78 +1126,137 @@ async def add_member_to_chat_handler(request: web.Request) -> web.Response:
         return web.json_response({'error': 'Unauthorized'}, status=401)
     
     chat_id = int(request.match_info['chat_id'])
+    members = get_chat_members(chat_id)
     
-    # Only chat creator can add members
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
-    cursor.execute('SELECT creator_username FROM chats WHERE id = ?', (chat_id,))
-    row = cursor.fetchone()
-    conn.close()
+    return web.json_response({'members': members})
+
+async def search_users_handler(request: web.Request):
+    """Search for users."""
+    token = request.headers.get('Authorization', '').replace('Bearer ', '')
+    username = validate_user_session(token)
     
-    if not row or row[0] != username:
-        return web.json_response({'error': 'Only chat creator can add members'}, status=403)
+    if not username:
+        return web.json_response({'error': 'Unauthorized'}, status=401)
+    
+    query = request.query.get('q', '')
+    users = search_users(query, username)
+    return web.json_response({'users': users})
+
+async def send_friend_request_handler(request: web.Request):
+    """Send a friend request."""
+    token = request.headers.get('Authorization', '').replace('Bearer ', '')
+    username = validate_user_session(token)
+    
+    if not username:
+        return web.json_response({'error': 'Unauthorized'}, status=401)
     
     try:
         data = await request.json()
-        new_member = data.get('username', '').strip()
+        target_user = data.get('target_user', '').strip()
         
-        if not new_member:
-            return web.json_response({'success': False, 'message': 'Username required'}, status=400)
+        if not target_user or target_user == username:
+            return web.json_response({'success': False, 'message': 'Invalid target user'}, status=400)
         
-        result = add_user_to_chat(chat_id, new_member)
-        if result['success']:
-            return web.json_response(result)
-        else:
-            return web.json_response(result, status=400)
+        result = send_friend_request(username, target_user)
+        
+        if result['success'] and target_user in clients:
+            try:
+                await clients[target_user].send_str(json.dumps({"type": "friend_request"}))
+            except:
+                pass
+        
+        return web.json_response(result)
     except Exception as e:
         return web.json_response({'success': False, 'message': str(e)}, status=500)
 
+async def get_friend_requests_handler(request: web.Request):
+    """Get friend requests."""
+    token = request.headers.get('Authorization', '').replace('Bearer ', '')
+    username = validate_user_session(token)
+    
+    if not username:
+        return web.json_response({'error': 'Unauthorized'}, status=401)
+    
+    requests = get_friend_requests(username)
+    return web.json_response({'requests': requests})
+
+async def respond_to_friend_request_handler(request: web.Request):
+    """Respond to a friend request."""
+    token = request.headers.get('Authorization', '').replace('Bearer ', '')
+    username = validate_user_session(token)
+    
+    if not username:
+        return web.json_response({'error': 'Unauthorized'}, status=401)
+    
+    try:
+        data = await request.json()
+        sender = data.get('sender', '').strip()
+        accept = data.get('accept', False)
+        
+        if not sender:
+            return web.json_response({'success': False, 'message': 'Sender required'}, status=400)
+        
+        result = respond_to_friend_request(sender, username, accept)
+        
+        if result['success'] and accept:
+            # Notify the sender
+            if sender in clients:
+                try:
+                    await clients[sender].send_str(json.dumps({"type": "friend_request_accepted"}))
+                except:
+                    pass
+        
+        return web.json_response(result)
+    except Exception as e:
+        return web.json_response({'success': False, 'message': str(e)}, status=500)
+
+async def http_handler(request: web.Request):
+    """Handle HTTP requests for the main page."""
+    return web.Response(text=HTML_PAGE, content_type='text/html')
 
 async def on_shutdown(app):
     """Close all WebSocket connections on shutdown."""
     for client in clients.values():
         await client.close()
     clients.clear()
-    usernames.clear()
-
 
 def create_app():
     """Create and configure the aiohttp application."""
     app = web.Application()
     app.router.add_get('/', http_handler)
-    app.router.add_get('/ws', handle_client)  # WebSocket endpoint
-    app.router.add_get('/admin', admin_page_handler)  # Admin panel page
-    
-    # Admin API routes
-    app.router.add_post('/api/admin/login', admin_login_handler)
-    app.router.add_get('/api/admin/messages', admin_messages_handler)
-    app.router.add_get('/api/admin/users', admin_users_handler)
-    app.router.add_post('/api/admin/block-user', admin_block_user_handler)
-    app.router.add_post('/api/admin/delete-message', admin_delete_message_handler)
-    app.router.add_post('/api/admin/clear-messages', admin_clear_messages_handler)
+    app.router.add_get('/ws', handle_client)
     
     # User authentication API routes
     app.router.add_post('/api/user/register', user_register_handler)
     app.router.add_post('/api/user/login', user_login_handler)
     app.router.add_get('/api/user/chats', user_chats_handler)
     app.router.add_post('/api/user/chats', create_chat_handler)
+    
+    # Chat routes
     app.router.add_get('/api/chat/{chat_id}/messages', get_chat_messages_handler)
     app.router.add_post('/api/chat/{chat_id}/messages', send_chat_message_handler)
-    app.router.add_post('/api/chat/{chat_id}/members', add_member_to_chat_handler)
+    app.router.add_get('/api/chat/{chat_id}/members', get_chat_members_handler)
+    
+    # User search
+    app.router.add_get('/api/users/search', search_users_handler)
+    
+    # Friend requests
+    app.router.add_post('/api/friend/request', send_friend_request_handler)
+    app.router.add_get('/api/friend/requests', get_friend_requests_handler)
+    app.router.add_post('/api/friend/respond', respond_to_friend_request_handler)
     
     app.on_shutdown.append(on_shutdown)
     return app
-
 
 def main():
     """Start the WebSocket server with HTTP support."""
     import os
     port = int(os.environ.get("PORT", 8080))
-    print(f"🚀 Messenger server starting on http://0.0.0.0:{port}")
+    print(f"🚀 Secure Messenger server starting on http://0.0.0.0:{port}")
+    print(f"📝 Default admin: {ADMIN_USERNAME} / admin123")
     
     app = create_app()
     web.run_app(app, host='0.0.0.0', port=port)
-
 
 if __name__ == "__main__":
     main()
